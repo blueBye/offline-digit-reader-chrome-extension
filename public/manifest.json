@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Offline OCR \u2014 PaddleOCR",
+  "description": "Offline PaddleOCR with saved per-website image/input selectors and configurable character format and preprocessing.",
+  "version": "2.7.0",
+  "minimum_chrome_version": "116",
+  "action": {
+    "default_title": "Select image for offline OCR",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';",
+    "sandbox": "sandbox allow-scripts; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; connect-src 'self' chrome-extension: blob:; img-src 'self' data: blob:; child-src 'self' blob:; object-src 'none';"
+  },
+  "sandbox": {
+    "pages": [
+      "ocr-sandbox.html"
+    ]
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "models/*.tar",
+        "wasm/*.wasm",
+        "wasm/*.mjs"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
+}

@@ -1,0 +1,25 @@
+:root { font: 14px/1.5 system-ui,-apple-system,Segoe UI,Arial,sans-serif; color: #191a20; background: #f7f7fa; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.popup { width: 330px; padding: 20px; }
+.reader { padding: 22px; width: 100%; }
+h1 { font-size: 20px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -.025em; }
+p { margin: 7px 0 15px; color: #62616d; }
+header p { margin-bottom: 15px; }
+.panel { margin: 14px 0; padding: 14px; background: white; border: 1px solid #e5e5ea; border-radius: 12px; }
+h2 { font-size: 13px; color: #52515d; margin: 0 0 9px; font-weight: 600; }
+canvas { display: block; max-width: 100%; height: auto; border: 1px solid #ededf0; background: #fff; image-rendering: auto; border-radius: 4px; }
+button { cursor: pointer; background: white; color: #272733; border: 1px solid #dddde6; border-radius: 7px; padding: 9px 13px; font: inherit; font-weight: 600; }
+button:hover { background: #f2f2f5; } button:disabled { opacity: .5; cursor: default; }
+button.primary { background: #6550bc; border-color: #6550bc; color: white; } button.primary:hover { background: #53419e; }
+.popup button { width: 100%; }
+.status { background: #f0edf9; padding: 9px 11px; border-radius: 7px; font-size: 12px; color: #55418f; }
+.status.error { background: #fff0f0; color: #b32239; }
+.controls,.actions { display:flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.controls label { display:flex; align-items:center; gap:6px; color:#5c5966; font-size: 12px; }
+select { border:1px solid #dddddf; border-radius:5px; padding:6px; background: white; }
+#result { width: 100%; max-width: 310px; text-align:center; font-family: ui-monospace,Consolas,monospace; font-size: 34px; font-weight: 700; letter-spacing: .25em; padding: 9px; border: 1px solid #d7d4df; border-radius: 8px; }
+#result:focus { outline: 2px solid #6550bc; outline-offset: 1px; }
+.details { margin-top:9px; font-size:12px; color:#777580; min-height:16px; }
+.footnote { font-size: 12px; line-height: 1.6; }
+code { background:#eeeef4; font-size:11px; padding:1px 3px; border-radius:3px; }

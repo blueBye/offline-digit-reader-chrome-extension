@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.zip
+# Model files can be large and must be redistributed under appropriate licenses.
+public/models/*.tar

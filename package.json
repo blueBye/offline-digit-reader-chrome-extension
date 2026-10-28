@@ -1,0 +1,20 @@
+{
+  "name": "offline-digit-reader-paddleocr",
+  "version": "2.7.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/check-source.mjs && node scripts/check-models.mjs && vite build && node scripts/copy-wasm.mjs && node scripts/check-dist.mjs",
+    "dev": "vite --host 127.0.0.1",
+    "check:models": "node scripts/check-models.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "models:download": "node scripts/download-models.mjs",
+    "models:setup": "node scripts/setup-models.mjs"
+  },
+  "dependencies": {
+    "@paddleocr/paddleocr-js": "0.4.2"
+  },
+  "devDependencies": {
+    "vite": "6.4.1"
+  }
+}

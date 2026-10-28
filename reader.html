@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Offline Digit Reader — PaddleOCR</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    .row-note {font-size: 12px; color: #62616d; margin: 5px 0 9px}
+    .ocr-metrics {font-size: 12px; color: #53516a; margin-top: 9px; white-space: pre-line;}
+    #candidate-list {font: 12px/1.5 ui-monospace,Consolas,monospace; white-space: pre-wrap; margin-top:7px;}
+  </style>
+</head>
+<body class="reader">
+  <header><h1>Offline Digit Reader <span style="font-size:13px; font-weight:normal">PaddleOCR v2.7</span></h1>
+    <p>Neural-network text detection and recognition, running locally in Chrome.</p>
+  </header>
+  <div id="monitor-panel" class="panel" hidden><div class="monitor-row"><div><strong>Live monitoring</strong><div id="monitor-status" class="row-note">Watching the selected image and input.</div></div><button id="stop-monitor">Stop monitoring</button></div></div>
+  <div id="status" role="status" class="status">Reading selected image…</div>
+  <section class="panel"><h2>Selected image</h2><canvas id="original" aria-label="Original image"></canvas></section>
+  <section class="panel">
+    <h2>OCR input / preprocessing preview</h2>
+    <canvas id="processed" aria-label="Image sent to PaddleOCR"></canvas>
+    <p class="row-note" id="rule-summary">Preprocessing is configured in the extension's Current tab.</p>
+  </section>
+  <section class="panel">
+    <h2>Recognized text (editable)</h2>
+    <input id="result" type="text" maxlength="24" inputmode="text" autocomplete="off" spellcheck="false" aria-label="Recognized characters" placeholder="Recognized characters">
+    <div id="details" class="details" aria-live="polite"></div>
+    <div id="candidate-list" aria-live="polite"></div>
+    <div class="actions"><button id="rerun" class="primary">Run PaddleOCR</button><button id="copy">Copy result</button><button id="fill" disabled>Fill selected field</button></div>
+  </section>
+  <p class="footnote">Local inference only. Accuracy on distorted digit images is not guaranteed; verify the result. In monitoring mode, valid readings matching your settings are entered into your selected input. It never submits the form.</p>
+  <details class="diagnostics"><summary>Diagnostics</summary><pre id="diagnostics" aria-live="polite"></pre></details>
+  <!-- This tiny plain script handles image loading even when the OCR library fails. -->
+  <script src="/reader-boot.js"></script>
+  <iframe id="ocr-sandbox" src="/ocr-sandbox.html" title="Local OCR inference engine" aria-hidden="true" tabindex="-1" style="width:0;height:0;border:0;position:absolute;left:-99999px"></iframe>
+  <script type="module" src="/src/reader.js"></script>
+</body>
+</html>

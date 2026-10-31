@@ -178,10 +178,10 @@ function upscaleBits(bits,w,h,factor=3) {
 }
 
 function prepareLegacyImage(image, options={}) {
-  if(!image?.naturalWidth||!image?.naturalHeight)throw new Error('Image cannot be decoded.');
-  const upscale=Math.min(4,Math.max(1,Math.ceil(110/image.naturalHeight)));
-  const width=Math.min(1600,Math.round(image.naturalWidth*upscale));
-  const height=Math.min(600,Math.round(image.naturalHeight*width/image.naturalWidth));
+  if(!(image?.naturalWidth||image?.width) || !(image?.naturalHeight||image?.height))throw new Error('Image cannot be decoded.');
+  const upscale=Math.min(4,Math.max(1,Math.ceil(110/(image.naturalHeight||image.height))));
+  const width=Math.min(1600,Math.round((image.naturalWidth||image.width)*upscale));
+  const height=Math.min(600,Math.round((image.naturalHeight||image.height)*width/(image.naturalWidth||image.width)));
   const canvas=document.createElement('canvas');canvas.width=width;canvas.height=height;
   const context=canvas.getContext('2d',{willReadFrequently:true});
   context.fillStyle='white';context.fillRect(0,0,width,height);context.drawImage(image,0,0,width,height);
@@ -208,8 +208,8 @@ function prepareLegacyImage(image, options={}) {
 
 
 export function prepareImage(image, options={}) {
-  if(!image?.naturalWidth||!image?.naturalHeight)throw new Error('Image cannot be decoded.');
-  const w=image.naturalWidth,h=image.naturalHeight;
+  if(!(image?.naturalWidth||image?.width) || !(image?.naturalHeight||image?.height))throw new Error('Image cannot be decoded.');
+  const w=(image.naturalWidth||image.width),h=(image.naturalHeight||image.height);
   if(w*h>8_000_000)throw new Error('Image is too large.');
   const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;
   const context=canvas.getContext('2d',{willReadFrequently:true});

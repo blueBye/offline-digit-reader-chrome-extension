@@ -39,20 +39,15 @@ async function loadEngine() {
   return enginePromise;
 }
 
-function loadImage(dataUrl) {
-  return new Promise((resolve, reject) => {
-    if (!/^data:image\/png;base64,/i.test(dataUrl) || dataUrl.length > 8_000_000) {
-      reject(new Error('Invalid or excessively large image payload'));
-      return;
-    }
-    const img = new Image();
-    img.onload = () => {
-      if (img.naturalWidth * img.naturalHeight > 8_000_000) reject(new Error('Image too large'));
-      else resolve(img);
-    };
-    img.onerror = () => reject(new Error('Unable to decode image in OCR sandbox'));
-    img.src = dataUrl;
-  });
+// PaddleOCR.js accepts Blob directly. Avoid HTMLImageElement on hidden
+// extension documents, where load/decode events can remain pending.
+function pngBlob(dataUrl) {
+  const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/i.exec(dataUrl || '');
+  if (!match || dataUrl.length > 8_000_000) throw Error('Invalid OCR PNG input');
+  const binary = atob(match[1]);
+  const bytes = new Uint8Array(binary.length);
+  for (let i=0; i<bytes.length; i++) bytes[i]=binary.charCodeAt(i);
+  return new Blob([bytes], {type:'image/png'});
 }
 
 window.addEventListener('message', async event => {
@@ -72,7 +67,7 @@ window.addEventListener('message', async event => {
       if (!variant || typeof variant.name !== 'string') continue;
       send('progress', id, {message: `Recognizing ${variant.name} image…`});
       try {
-        const input = await loadImage(variant.image);
+        const input = pngBlob(variant.image);
         const [prediction] = await engine.predict(input, {
           textDetLimitSideLen: 640,
           textDetLimitType: 'max',

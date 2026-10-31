@@ -1,91 +1,150 @@
-// This DOM-bearing extension page stays independent of any user-visible reader window.
-// Neural network dependency remains in the sandbox iframe because of MV3's eval CSP.
+/**
+ * Offscreen bridge. PaddleOCR/ONNX/OpenCV run ONLY in a sandboxed iframe.
+ * Keep iframe laid out (not display:none): Chromium may pause render-dependent
+ * work inside a hidden cross-origin frame. The offscreen DOCUMENT is never UI.
+ */
 import {prepareImage} from './preprocess.js';
 import {chooseCandidate,fromOcrResult} from './candidates.js';
-const protocol='offline-paddleocr-v2';
+import {decodeImage,imageDimensions} from './image-decode.js';
+
+const PROTOCOL='offline-paddleocr-v2';
 const frame=document.querySelector('#ocr-sandbox');
-let engineReady=false,resolveReady;
-const ready=new Promise(resolve=>resolveReady=resolve);
-let jobSequence=0, processing=false, newest=null, lastAcceptedKey=null;
+let ready=false, readyResolve;
+let readyPromise=new Promise(resolve=>{readyResolve=resolve;});
+let requestId=0, isProcessing=false, newest=null, lastAcceptedKey=null;
+let activeJob=null, lastStage='waiting for OCR sandbox';
 const waiting=new Map();
-function err(e){return e?.message||String(e);}
-function timeLimit(promise,ms){let t;return Promise.race([promise,new Promise((_,reject)=>{t=setTimeout(()=>reject(Error('OCR operation timed out')),ms);})]).finally(()=>clearTimeout(t));}
-window.addEventListener('message',e=>{
-  if(e.source!==frame.contentWindow || e.data?.protocol!==protocol)return;
-  const {type,id}=e.data;
-  if(type==='ready'){engineReady=true;resolveReady();return;}
+const errorText=e=>e?.message||String(e);
+
+async function send(job,type,fields={}) {
+  return chrome.runtime.sendMessage({type,monitorId:job.monitorId,revision:job.revision,...fields});
+}
+function status(job,message,level='info') {
+  if(!job)return;
+  return send(job,'OFFLINE_OCR_STATUS',{message,level}).catch(()=>{});
+}
+function withTimeout(p,ms,message) {
+  let timer;
+  return Promise.race([p,new Promise((_,reject)=>{
+    timer=setTimeout(()=>reject(Error(`${typeof message==='function'?message():message} (after ${Math.round(ms/1000)}s)`)),ms);
+  })]).finally(()=>clearTimeout(timer));
+}
+function resetSandbox(reason) {
+  for(const [id,task] of waiting) {
+    waiting.delete(id);
+    task.reject(Error(`OCR sandbox restarted: ${reason}`));
+  }
+  ready=false;
+  readyPromise=new Promise(resolve=>{readyResolve=resolve;});
+  // Chrome can retain the old sandbox context if src is reset to same URL.
+  // Replace the iframe to force a new OpenCV/ORT JavaScript context.
+  const next=currentFrame.cloneNode(false);
+  next.src=chrome.runtime.getURL('ocr-sandbox.html')+`?restart=${Date.now()}`;
+  currentFrame.replaceWith(next);
+  currentFrame=next;
+  attachFrame(next);
+}
+let currentFrame=frame;
+function attachFrame(f) {
+  f.addEventListener('load',()=>{
+    f.contentWindow?.postMessage({protocol:PROTOCOL,type:'ping'},'*');
+  });
+}
+attachFrame(frame);
+window.addEventListener('message',event=>{
+  if(event.source!==currentFrame.contentWindow || event.data?.protocol!==PROTOCOL)return;
+  const {type,id,message}=event.data;
+  if(type==='ready') { if(!ready){ready=true;readyResolve();} return; }
+  if(type==='error') { lastStage=`sandbox error: ${String(message||'unknown').slice(0,160)}`;void status(activeJob,lastStage,'error');return; }
+  if(type==='progress') {lastStage=String(message||'working').slice(0,180);void status(activeJob,lastStage);return;}
   const task=waiting.get(id);
   if(!task)return;
-  if(type==='complete'){waiting.delete(id);task.resolve(e.data.outputs||[]);}
-  if(type==='failed'){waiting.delete(id);task.reject(Error(e.data.message||'Recognition failed'));}
+  if(type==='complete'){waiting.delete(id);task.resolve(event.data.outputs||[]);}
+  else if(type==='failed'){waiting.delete(id);task.reject(Error(message||'OCR runtime failed'));}
 });
-frame.addEventListener('load',()=>frame.contentWindow?.postMessage({protocol,type:'ping'},'*'));
 function canvas(w,h){const c=document.createElement('canvas');c.width=w;c.height=h;return c;}
-function upscale(img){const c=canvas(img.width*3,img.height*3),ctx=c.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(img,0,0,c.width,c.height);return c;}
-async function imageForJob(dataURL){
-  if(typeof dataURL!=='string'||dataURL.length>4_000_000||!/^data:image\//.test(dataURL))throw Error('Invalid image');
-  const img=new Image();img.src=dataURL;await timeLimit(img.decode(),10000);
-  if(!img.naturalWidth||!img.naturalHeight||img.naturalWidth*img.naturalHeight>8_000_000)throw Error('Image size is invalid');
-  return img;
+function upscale(image){
+  const c=canvas(image.width*3,image.height*3),ctx=c.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,c.width,c.height);
+  ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+  ctx.drawImage(image,0,0,c.width,c.height);
+  return c;
 }
-async function recognize(img){
+async function recognize(img,job){
+  lastStage='preprocessing image';
+  await status(job,'Preparing original and cleaned image…');
   const clean=prepareImage(img,{threshold:'auto'});
   const variants=[{name:'original',image:upscale(img).toDataURL('image/png')},
     {name:'cleaned',image:upscale(clean.processed).toDataURL('image/png')}];
-  const ping=setInterval(()=>frame.contentWindow?.postMessage({protocol,type:'ping'},'*'),300);
-  try{await timeLimit(ready,15000);}finally{clearInterval(ping);}
-  if(!engineReady)throw Error('OCR sandbox not ready');
-  const id=++jobSequence;
-  const result=new Promise((resolve,reject)=>waiting.set(id,{resolve,reject}));
-  frame.contentWindow.postMessage({protocol,type:'recognize',id,variants},'*');
-  try{return await timeLimit(result,90000);}finally{waiting.delete(id);}
-}
-async function send(job,type,fields={}){
-  return chrome.runtime.sendMessage({type,monitorId:job.monitorId,revision:job.revision,...fields});
+  lastStage='waiting for OCR sandbox handshake';
+  const ping=setInterval(()=>currentFrame.contentWindow?.postMessage({protocol:PROTOCOL,type:'ping'},'*'),400);
+  try{await withTimeout(readyPromise,12000,'OCR sandbox did not start');}
+  finally{clearInterval(ping);}
+
+  const id=++requestId;
+  const response=new Promise((resolve,reject)=>waiting.set(id,{resolve,reject}));
+  lastStage='waiting for PaddleOCR model initialization';
+  currentFrame.contentWindow.postMessage({protocol:PROTOCOL,type:'recognize',id,variants},'*');
+  try {return await withTimeout(response,75000,()=>`PaddleOCR stalled at: ${lastStage}`);}
+  finally {waiting.delete(id);}
 }
 async function process(job){
-  try{
-    const img=await imageForJob(job.dataURL);
-    await send(job,'OFFLINE_OCR_STATUS',{message:`Recognizing image #${job.revision}…`});
-    const outputs=await recognize(img);
-    // Compare the current job in storage, not only this module's queue; messages can be delayed.
+  activeJob=job;
+  let img=null;
+  try {
+    lastStage='decoding selected image with ImageBitmap';
+    await status(job, 'Decoding selected image locally…');
+    img=await decodeImage(job.dataURL);
+    const {width,height}=imageDimensions(img);
+    await status(job, `Image decoded (${width}×${height}); preparing OCR…`);
+    let output;
+    try {
+      output=await recognize(img,job);
+    } catch(firstError) {
+      if(!/stalled|did not start/i.test(errorText(firstError)))throw firstError;
+      await status(job,`OCR engine was unresponsive (${lastStage}); restarting once…`,'error');
+      resetSandbox(errorText(firstError));
+      output=await recognize(img,job); // One bounded retry; never click Refresh on engine failures.
+    }
     const current=await send(job,'OFFLINE_OCR_IS_CURRENT');
     if(!current?.ok)return;
-    const candidates=outputs.flatMap(o=>o.error?[]:fromOcrResult({items:o.items},o.mode));
+    const candidates=output.flatMap(o=>o.error?[]:fromOcrResult({items:o.items},o.mode));
     const best=chooseCandidate(candidates);
-    if(!best || best.score<0.85){
-      await send(job,'OFFLINE_OCR_STATUS',{message:best?'Low confidence; requesting new image.':'No complete six-digit result; requesting new image.'});
-      const refreshed=await send(job,'OFFLINE_OCR_RETRY');
-      if(refreshed?.ok===false)await send(job,'OFFLINE_OCR_STATUS',{level:'error',message:refreshed.error});
+    if(!best||best.score<0.85) {
+      await status(job,best?'Low confidence; requesting new image.':'No complete six-digit result; requesting new image.');
+      const refresh=await send(job,'OFFLINE_OCR_RETRY');
+      if(refresh?.ok===false)await status(job,refresh.error,'error');
       return;
     }
-    const applied=await send(job,'OFFLINE_OCR_SUBMIT',{digits:best.digits,score:best.score});
-    await send(job,'OFFLINE_OCR_STATUS',{message:applied?.ok?`Submitted image #${job.revision} (${Math.round(best.score*100)}% confidence).`:`Not submitted: ${applied?.error||'Unknown error'}`,level:applied?.ok?'info':'error'});
-  }catch(e){
-    await send(job,'OFFLINE_OCR_STATUS',{level:'error',message:`OCR failed: ${err(e)}`}).catch(()=>{});
-    // A broken OCR engine is NOT an unrecognized digit; do not loop refreshing the page.
+    const result=await send(job,'OFFLINE_OCR_SUBMIT',{digits:best.digits,score:best.score});
+    await status(job,result?.ok?`Submitted image #${job.revision} (${Math.round(best.score*100)}%).`:
+      `Not submitted: ${result?.error||'Unknown error'}`,result?.ok?'info':'error');
+  } catch(error) {
+    // An engine timeout is not a bad CAPTCHA: don't click refresh or submit.
+    await status(job,`OCR failed at ${lastStage}: ${errorText(error)}. No button was clicked.`,'error');
+    if(/stalled|did not start|sandbox restarted/i.test(errorText(error)))resetSandbox(errorText(error));
+  } finally {
+    img?.close?.(); // ImageBitmap releases native decoder memory.
+    if(activeJob===job)activeJob=null;
   }
 }
 async function pump(){
-  if(processing)return;
-  processing=true;
-  try{while(newest){const job=newest;newest=null;await process(job);}}finally{processing=false;}
+  if(isProcessing)return;
+  isProcessing=true;
+  try{while(newest){const job=newest;newest=null;await process(job);}}
+  finally{isProcessing=false;}
 }
 function queue(job){
   if(!job?.monitorId||!Number.isSafeInteger(job.revision)||typeof job.dataURL!=='string')return;
   const key=`${job.monitorId}:${job.revision}`;
-  if(key===lastAcceptedKey)return; // Startup pull and background push can deliver the same job.
+  if(lastAcceptedKey===key)return;
   lastAcceptedKey=key;
   newest=job;void pump();
 }
-// Only chrome.runtime is available in an offscreen extension document.
-chrome.runtime.onMessage.addListener((message,sender,respond)=>{
-  if(message?.type!=='OFFLINE_OCR_JOB' || sender.id!==chrome.runtime.id || sender.tab)return false;
-  if(message.job)queue(message.job);
+chrome.runtime.onMessage.addListener((m,sender,respond)=>{
+  if(m?.type!=='OFFLINE_OCR_JOB'||sender.id!==chrome.runtime.id||sender.tab)return false;
+  if(m.job)queue(m.job);
   else {newest=null;lastAcceptedKey=null;}
-  respond({ok:true});
-  return false;
+  respond({ok:true});return false;
 });
-chrome.runtime.sendMessage({type:'OFFLINE_OCR_GET_JOB'}).then(r=>{
-  if(r?.job)queue(r.job);
-}).catch(()=>{});
+chrome.runtime.sendMessage({type:'OFFLINE_OCR_GET_JOB'}).then(r=>{if(r?.job)queue(r.job);}).catch(()=>{});

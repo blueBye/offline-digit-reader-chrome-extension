@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Offline Six-Digit Image Reader (PaddleOCR)",
-  "description": "Offline OCR monitoring with on-page banner, four selectors, and background recognition.",
-  "version": "2.7.0",
+  "description": "Offline PaddleOCR with ImageBitmap decoding, on-page status, four selectors and image monitoring.",
+  "version": "2.9.0",
   "minimum_chrome_version": "116",
   "action": {
     "default_title": "Select image for offline OCR",

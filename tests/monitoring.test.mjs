@@ -26,7 +26,7 @@ test('creates local offscreen OCR host and stores initial image',async()=>{
   assert.equal((await env.send({type:'OFFLINE_OCR_MONITOR_START',monitorId:id,dataURL:img})).ok,true);
   assert.equal(env.state.monitorContext.revision,1);
   assert.equal(env.events[0].url,'offscreen.html');
-  assert.equal(env.events[0].reasons[0],'DOM_PARSER');
+  assert.equal(env.events[0].reasons[0],'BLOBS');
 });
 test('refreshes on unusable recognition but rejects spoofed senders',async()=>{
   const env=setup();await env.send({type:'OFFLINE_OCR_MONITOR_START',monitorId:id,dataURL:img});

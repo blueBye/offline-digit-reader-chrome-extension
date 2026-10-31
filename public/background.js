@@ -16,8 +16,8 @@ async function ensureOffscreen() {
   if (await chrome.offscreen.hasDocument()) return;
   if (!creatingOffscreen) {
     creatingOffscreen=chrome.offscreen.createDocument({
-      url:'offscreen.html', reasons:['DOM_PARSER'],
-      justification:'Decode user-selected images and run local PaddleOCR without a visible window.'
+      url:'offscreen.html', reasons:['BLOBS'],
+      justification:'Decode embedded images using Blob and ImageBitmap for offline PaddleOCR.'
     }).finally(()=>{creatingOffscreen=null;});
   }
   await creatingOffscreen;

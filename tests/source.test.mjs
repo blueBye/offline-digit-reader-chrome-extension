@@ -61,11 +61,32 @@ test('four selector banner, offscreen worker and no preprocessing preview',()=>{
   assert.match(picker,/4\/4 — Select the submit button/);
   assert.match(picker,/OFFLINE_OCR_REFRESH/);
   assert.match(picker,/OFFLINE_OCR_APPLY_AND_SUBMIT/);
-  assert.match(picker,/MAX_REFRESHES=12/);
+  assert.doesNotMatch(picker,/MAX_REFRESHES/);
+  assert.match(picker,/Unlimited total retries/);
+  assert.match(picker,/chrome.storage.local.set/);
+  assert.match(picker,/OFFLINE_OCR_START_PICKING/);
+  assert.match(picker,/autoSubmit/);
+  assert.match(picker,/domainProfiles/);
   assert.match(picker,/id="banner"/);
   assert.match(offscreen,/prepareImage/);
   assert.match(offscreen,/chooseCandidate/);
   assert.match(background,/chrome\.offscreen\.createDocument/);
   assert.ok(manifest.permissions.includes('offscreen'));
   assert.doesNotMatch(page,/id="processed"/);
+});
+
+
+test('domain-wide auto start and settings assets are part of MV3 build',()=>{
+ const root=resolve(import.meta.dirname,'..');
+ const manifest=JSON.parse(readFileSync(resolve(root,'public/manifest.json'),'utf8'));
+ assert.equal(manifest.options_page,'settings.html');
+ assert.ok(manifest.content_scripts?.some(s=>s.js.includes('picker.js') && s.matches.includes('https://*/*')));
+ const picker=readFileSync(resolve(root,'public/picker.js'),'utf8');
+ assert.match(picker,/location.hostname.toLowerCase\(\)/);
+ assert.doesNotMatch(picker,/location.pathname/);
+ assert.match(picker,/tryAutoStart/);
+ const popup=readFileSync(resolve(root,'popup.html'),'utf8');
+ assert.match(popup,/id="auto-submit"/);
+ assert.match(popup,/id="settings"/);
+ assert.match(readFileSync(resolve(root,'settings.html'),'utf8'),/Saved domains/);
 });

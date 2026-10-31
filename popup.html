@@ -1,1 +1,12 @@
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/style.css"><title>Offline Digit Reader</title></head><body class="popup"><h1>Offline Digit Reader</h1><p>Select the <b>image</b>, <b>input</b>, <b>refresh</b>, and <b>submit</b> controls in that order. An on-page banner displays OCR status; the model runs in an offscreen document, so the old reader window is no longer needed.</p><button id="select" class="primary">Select four elements</button><button id="stop" hidden>Stop monitoring</button><p id="status" class="status" role="status">Everything runs locally.</p><script type="module" src="/src/popup.js"></script></body></html>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="stylesheet" href="/style.css"><title>Offline Digit Reader</title></head>
+<body class="popup">
+  <h1>Offline Digit Reader</h1>
+  <p id="domain" class="domain">Open a website to configure it.</p>
+  <div class="setting-row"><label for="auto-submit"><input id="auto-submit" type="checkbox"> <b>Submit automatically</b></label>
+    <small>Unchecked: enter the six digits, then I press Confirm myself.</small></div>
+  <button id="select" class="primary">Configure four elements</button>
+  <button id="stop" hidden>Stop monitoring on this page</button>
+  <button id="settings">Settings · Saved domains</button>
+  <p id="status" class="status" role="status">Configuration is saved by domain, not page URL.</p>
+  <script type="module" src="/src/popup.js"></script>
+</body></html>

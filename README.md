@@ -1,58 +1,57 @@
-# Offline Six-Digit Reader v2.9 — Image decoding fix
+# Offline Six-Digit Image Reader — PaddleOCR v3.0
 
-A Chrome Manifest V3 extension for local PP-OCRv5 digit recognition. The OCR engine, ONNX models, JavaScript and WebAssembly assets run on the user's device. The extension observes a user-selected image and can populate the selected form field and interact with user-selected refresh/submit controls. Use only on systems where you are authorized to automate this flow.
+Chrome Manifest V3 extension. Recognizes a locally embedded six-digit image using local PP-OCRv5 ONNX models, fills a selected field, and optionally clicks a selected form submit button. No OCR API, CDN or external runtime service is used. Only use on websites where you have permission to automate the workflow.
 
-## What changed in v2.9
+## New in v3.0
 
-**Problem:** The v2.8 offscreen document called `await new Image().decode()` on the data URL. That promise can remain pending in a headless/offscreen document, leading to `Image decoding timed out (after 10s)` *before PaddleOCR ever starts*. The old code mislabeled that failure as a problem requiring an OCR engine restart.
+- **Save controls by domain (hostname)**: select the embedded image, input, refresh button and submit button once. The extension stores CSS selectors in `chrome.storage.local`, indexed by the normalized hostname (`www.` is treated as the same hostname). It does **not** include the page path, query string or hash. For example, `https://www.example.com/orders/1` and `https://example.com/orders/2` use the same profile. Different non-`www` subdomains are separate.
+- **Automatic startup**: after loading a website with a saved profile, a content script waits for the four saved controls to appear, then starts OCR without opening the extension popup. Dynamic page content is supported by a DOM observer and 1-second polling. Configured site controls must still match the saved selectors on each page.
+- **Settings**: the popup's **Settings · Saved domains** button opens a page listing saved hostnames, confirmation modes and a Remove button. Removing a domain stops monitoring it and prevents auto-start the next time you visit.
+- **Confirmation choice**: the popup has a **Submit automatically** checkbox. Disabled by default: recognized digits fill the input, and you manually click the website's confirmation/submit button. When enabled: the extension clicks the selected submit control once per image revision. This choice is saved per configured domain, and can be changed while monitoring.
+- **No fixed refresh count limit**: OCR may refresh again whenever a *new image* fails six-digit/85%-confidence validation. Only one refresh click is allowed for any unchanged image; if the website doesn't update the image after refresh, monitoring reports the problem and doesn't hammer the button.
+- **Existing v2.9 OCR preserved**: ImageBitmap/Blob image decoding, Gaussian + threshold cleanup, original/cleaned PaddleOCR candidates, local ONNX, Emscripten-compatible sandbox and offscreen host are unchanged.
 
-**Fix:**
+## Update an existing working v2.9 project
 
-- `src/image-decode.js`: convert the base64 image to a `Blob`, then decode it with `createImageBitmap(blob)` and a bounded `Image.onload` fallback. No `Image.decode()` dependency. Validates byte size and pixel dimensions.
-- `src/preprocess.js`: accepts either `ImageBitmap` or `HTMLImageElement` without changing the established native-resolution preprocessing algorithm.
-- `src/ocr-sandbox.js`: passes local PNG `Blob`s directly into PaddleOCR's supported `predict()` API instead of creating another HTML image element inside the sandbox.
-- `src/offscreen.js`: reports image decoding separately from model initialization and recognition stages, and releases decoded ImageBitmaps. Engine errors do not click the refresh or submit buttons.
-- `public/background.js`: uses Chrome's `BLOBS` offscreen reason for binary local image decoding.
-
-### Apply the hotfix to an existing v2.8 project
-
-1. Close/stop the old OCR monitoring session.
-2. Extract `offline-digit-reader-paddleocr-v2.9-hotfix.zip` over the **project root**, keeping directory structure, replacing the older files.
-3. **Keep the two existing models** under `public/models/`; no model download or package reinstall is required.
-4. In PowerShell, run:
+1. Close current monitoring on the page. Extract the **v3.0 hotfix ZIP over your project root**, retaining the directory structure and replacing the old files.
+2. **Do not delete `public/models/` or `node_modules/`.** Your downloaded `PP-OCRv5_mobile_det.tar` and `en_PP-OCRv5_mobile_rec.tar` remain valid.
+3. Run:
 
 ```powershell
 pnpm test
 pnpm run build
 ```
 
-5. Open `chrome://extensions`, reload the unpacked extension installed from **`dist/`**. Refresh the target webpage and select the four controls again.
+4. In `chrome://extensions`, reload the unpacked extension that points to the newly built **`dist` directory**. Chrome may ask you to approve the new permission for running the content script on webpages. **Refresh any already-open website once** after installing this update.
+5. Open the popup, choose manual or automatic submission, click **Configure four elements**, then select image, input, refresh and submit in sequence. That configuration is now saved. Future visits to this domain automatically start monitoring as soon as those controls exist.
 
-### Build from the complete source
+## Clean build
 
 ```powershell
 pnpm install
-pnpm run models:setup  # only if the two ONNX TAR files are missing
+pnpm run models:setup   # If models are not already present
 pnpm test
 pnpm run build
 ```
 
-Load the generated `dist/` folder via Chrome's "Load unpacked" control. All model assets and WASM loaders must be bundled. No network requests are made at OCR runtime.
+Load `dist/` using `chrome://extensions` → Developer mode → Load unpacked. `dist` is generated locally and deliberately omitted from Git.
 
-## Usage
+**Privacy/permission note:** Chrome needs broad http(s) content-script host access to detect the current hostname and start automatically. On pages without a saved domain configuration, this script performs no OCR or field selection. The only information stored persistently is CSS selectors and your confirmation preference, **not** image data or recognized digits. The selected image is transmitted only within the extension for local processing.
 
-Choose, in order, the image (base64 within `<help>` or `<img>`), destination input, refresh button, and submit button. An on-page banner shows progress; OCR executes in an offscreen document without a separate reader window. The monitor watches DOM changes plus a one-second fallback poll. Original and automatically cleaned images are compared; five-digit outputs are never accepted. A result must be **exactly six digits** and meet the existing **85% confidence threshold**. The tool refuses stale results, retries only when recognition is insufficient, and limits image refresh clicks to 12 per monitoring session.
+**Limitations:** Only one tab is actively processed at a time by the existing offscreen OCR service; starting a monitor in another tab stops the previous one. A saved selector may no longer match after a website layout change; use Configure again to overwrite it. Chrome may throttle updates in background tabs. A high-confidence *wrong* six-digit result can still occur, so manual confirmation is safer.
 
-Stop monitoring from the page banner. Be aware that a confidently *incorrect* six-digit prediction may still be submitted; confidence is not verification.
-
-## Tests / limitations
+## Tests
 
 ```powershell
 pnpm test
-python tests/browser-image-decode.py
-python tests/browser-monitor-smoke.py
 ```
 
-The image-decoder browser test checks the original supplied 200×50 JPEG and bundled PNG, plus a corrupt payload. The DOM smoke test covers the selectors, refresh, six-digit fill, submit and stop logic. Tests require Chromium and Python Playwright; `browser-image-decode.py` uses `/usr/bin/chromium` in this Linux environment, so adjust `executable_path` on Windows or use Playwright's installed Chromium.
+Linux/Chromium browser interaction tests (require Python + Playwright and `/usr/bin/chromium`; use an installed Chromium path on Windows):
 
-**Not yet verified:** A complete extension production build or end-to-end PaddleOCR inference in your installed Chrome. These require the 2 ONNX TAR files plus `@paddleocr/paddleocr-js` dependencies. If v2.9 still errors, copy the **complete on-page status text** so we can distinguish `ImageBitmap decoding`, preprocessing, and model inference failures.
+```bash
+python tests/browser-image-decode.py
+python tests/browser-domain-smoke.py
+python tests/browser-settings-smoke.py
+```
+
+The browser DOM tests mock extension messaging; **they do not test the real PaddleOCR ONNX inference runtime**. Full `pnpm run build` requires locally installed dependencies and model archives.

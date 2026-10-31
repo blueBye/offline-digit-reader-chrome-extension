@@ -2,12 +2,12 @@
 import { existsSync,readFileSync,readdirSync,statSync } from 'node:fs';
 import { resolve,join,dirname } from 'node:path';
 const dist=resolve(import.meta.dirname,'..','dist');
-const mustExist=['manifest.json','popup.html','reader.html','ocr-sandbox.html','offscreen.html','background.js','picker.js','reader-boot.js','models/PP-OCRv5_mobile_det.tar','models/en_PP-OCRv5_mobile_rec.tar'];
+const mustExist=['manifest.json','popup.html','settings.html','reader.html','ocr-sandbox.html','offscreen.html','background.js','picker.js','reader-boot.js','models/PP-OCRv5_mobile_det.tar','models/en_PP-OCRv5_mobile_rec.tar'];
 for(const name of mustExist) if(!existsSync(join(dist,name))) throw new Error(`Missing build artifact: ${name}`);
 const manifest=JSON.parse(readFileSync(join(dist,'manifest.json'),'utf8'));
 if(manifest.manifest_version!==3)throw new Error('Expected Manifest V3');
 if(!manifest.content_security_policy?.extension_pages?.includes('wasm-unsafe-eval'))throw new Error('Missing MV3 WASM CSP');
-for(const page of ['popup.html','reader.html','ocr-sandbox.html','offscreen.html']){
+for(const page of ['popup.html','settings.html','reader.html','ocr-sandbox.html','offscreen.html']){
   const html=readFileSync(join(dist,page),'utf8');
   const scripts=[...html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["']/gi)].map(m=>m[1]);
   const styles=[...html.matchAll(/<link\b[^>]*\bhref=["']([^"']+\.css(?:\?[^"']*)?)["']/gi)].map(m=>m[1]);
@@ -55,3 +55,5 @@ if (readFileSync(join(dist,'reader.html'),'utf8').includes('paddle-engine')) thr
 if(!manifest.permissions.includes('offscreen'))throw new Error('Offscreen permission missing');
 if(!readFileSync(join(dist,'offscreen.html'),'utf8').includes('ocr-sandbox.html'))throw new Error('Offscreen page does not host sandbox');
 if(readFileSync(join(dist,'reader.html'),'utf8').includes('id="processed"'))throw new Error('Preprocessing preview must be removed');
+
+if(!manifest.content_scripts?.some(c=>c.js?.includes('picker.js') && c.matches?.includes('https://*/*')))throw Error('Domain auto-start content script missing');

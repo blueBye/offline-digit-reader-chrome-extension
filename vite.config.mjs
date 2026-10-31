@@ -14,6 +14,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         popup: resolve(import.meta.dirname, 'popup.html'),
+        settings: resolve(import.meta.dirname, 'settings.html'),
         reader: resolve(import.meta.dirname, 'reader.html'),
         sandbox: resolve(import.meta.dirname, 'ocr-sandbox.html'),
         offscreen: resolve(import.meta.dirname, 'offscreen.html')

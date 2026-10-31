@@ -8,7 +8,7 @@ import { resolve, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export function validateSource(root) {
-  for (const page of ['popup.html', 'reader.html', 'ocr-sandbox.html', 'offscreen.html']) {
+  for (const page of ['popup.html', 'settings.html', 'reader.html', 'ocr-sandbox.html', 'offscreen.html']) {
     const filepath = resolve(root, page);
     if (!existsSync(filepath)) throw new Error(`Missing source page: ${page}`);
     const html = readFileSync(filepath, 'utf8');

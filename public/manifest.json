@@ -1,41 +1,18 @@
 {
   "manifest_version": 3,
   "name": "Offline Six-Digit Image Reader (PaddleOCR)",
-  "description": "Offline PaddleOCR with ImageBitmap decoding, on-page status, four selectors and image monitoring.",
-  "version": "2.9.0",
+  "description": "On-device PaddleOCR with saved per-domain selectors and manual or automatic confirmation.",
+  "version": "3.0.0",
   "minimum_chrome_version": "116",
-  "action": {
-    "default_title": "Select image for offline OCR",
-    "default_popup": "popup.html"
-  },
-  "background": {
-    "service_worker": "background.js"
-  },
-  "permissions": [
-    "activeTab",
-    "scripting",
-    "storage",
-    "offscreen"
-  ],
+  "action": {"default_title":"Offline OCR site monitor","default_popup":"popup.html"},
+  "options_page": "settings.html",
+  "background": {"service_worker":"background.js"},
+  "permissions": ["activeTab","scripting","storage","offscreen"],
+  "content_scripts": [{"matches":["http://*/*","https://*/*"],"js":["picker.js"],"run_at":"document_idle","all_frames":false}],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';",
     "sandbox": "sandbox allow-scripts; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; connect-src 'self' chrome-extension: blob:; img-src 'self' data: blob:; child-src 'self' blob:; object-src 'none';"
   },
-  "sandbox": {
-    "pages": [
-      "ocr-sandbox.html"
-    ]
-  },
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "models/*.tar",
-        "wasm/*.wasm",
-        "wasm/*.mjs"
-      ],
-      "matches": [
-        "<all_urls>"
-      ]
-    }
-  ]
+  "sandbox": {"pages":["ocr-sandbox.html"]},
+  "web_accessible_resources": [{"resources":["models/*.tar","wasm/*.wasm","wasm/*.mjs"],"matches":["<all_urls>"]}]
 }

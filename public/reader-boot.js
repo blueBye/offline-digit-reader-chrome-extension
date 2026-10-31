@@ -6,7 +6,6 @@
   const status = document.getElementById('status');
   const diagnostics = document.getElementById('diagnostics');
   const original = document.getElementById('original');
-  const preview = document.getElementById('processed');
   let imageDrawn = false;
 
   function log(message) {
@@ -70,7 +69,6 @@
     if (!img.naturalWidth || !img.naturalHeight) throw new Error('Decoded image has no dimensions.');
     if (img.naturalWidth * img.naturalHeight > 8_000_000) throw new Error('Image exceeds eight million pixels.');
     paint(original, img);
-    paint(preview, img);
     imageDrawn = true;
     log(`Preview ready: ${img.naturalWidth} × ${img.naturalHeight} pixels.`);
     return img;

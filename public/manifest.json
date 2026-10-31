@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Offline OCR \u2014 PaddleOCR",
-  "description": "Offline PaddleOCR with saved per-website image/input selectors and configurable character format and preprocessing.",
+  "name": "Offline Six-Digit Image Reader (PaddleOCR)",
+  "description": "Offline OCR monitoring with on-page banner, four selectors, and background recognition.",
   "version": "2.7.0",
   "minimum_chrome_version": "116",
   "action": {
@@ -14,7 +14,8 @@
   "permissions": [
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "offscreen"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';",
@@ -36,9 +37,5 @@
         "<all_urls>"
       ]
     }
-  ],
-  "optional_host_permissions": [
-    "http://*/*",
-    "https://*/*"
   ]
 }

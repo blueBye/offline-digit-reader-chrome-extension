@@ -217,14 +217,13 @@ export function prepareImage(image, options={}) {
   const rgba=context.getImageData(0,0,w,h),gray=new Uint8Array(w*h);
   for(let i=0;i<gray.length;i++)gray[i]=Math.round(.299*rgba.data[i*4]+.587*rgba.data[i*4+1]+.114*rgba.data[i*4+2]);
   // Deliberately do NOT blur the tiny native pixels first: it erases narrow 1s.
-  const grayscalePixels = options.blur ? convolveGaussian(gray,w,h,1) : gray;
   let bits;
-  if(options.threshold==='adaptive')bits=adaptiveBinarize(grayscalePixels,w,h);
+  if(options.threshold==='adaptive')bits=adaptiveBinarize(gray,w,h);
   else {
     // The old Otsu result was dominated by the large white background and
     // coloured confetti. Limit threshold to preserve only genuinely dark ink.
-    const t=Math.min(110,Math.max(70,otsu(grayscalePixels)));
-    bits=Uint8Array.from(grayscalePixels,px=>px<=t?1:0);
+    const t=Math.min(110,Math.max(70,otsu(gray)));
+    bits=Uint8Array.from(gray,px=>px<=t?1:0);
   }
   let region;
   // Detect prominent strokes, not individual noisy pixels.
@@ -264,25 +263,3 @@ export function prepareImage(image, options={}) {
   return {...prepared,processed,region,alternate:options._alternate?upscaleBits(options._alternate,w,h,scale):null};
 }
 
-
-// Configurable preprocessing. Keeps the existing successful text-isolation
-// algorithm when thresholding is enabled. All operations stay in Canvas 2D.
-export function processWithFilters(image, options={}) {
-  const {grayscale=true,gaussian=false,threshold=true}=options;
-  if(threshold) return prepareImage(image,{threshold:'auto',blur:gaussian?1:0}).processed;
-  const w=image.naturalWidth,h=image.naturalHeight;
-  const surface=document.createElement('canvas');surface.width=w;surface.height=h;
-  const ctx=surface.getContext('2d',{willReadFrequently:true});
-  ctx.fillStyle='white';ctx.fillRect(0,0,w,h);
-  if(gaussian)ctx.filter='blur(1px)';
-  ctx.drawImage(image,0,0);ctx.filter='none';
-  if(grayscale){
-    const data=ctx.getImageData(0,0,w,h);
-    for(let i=0;i<data.data.length;i+=4){
-      const lum=Math.round(.299*data.data[i]+.587*data.data[i+1]+.114*data.data[i+2]);
-      data.data[i]=data.data[i+1]=data.data[i+2]=lum;
-    }
-    ctx.putImageData(data,0,0);
-  }
-  return surface;
-}

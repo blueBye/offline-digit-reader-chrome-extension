@@ -2,16 +2,16 @@
 import { existsSync,readFileSync,readdirSync,statSync } from 'node:fs';
 import { resolve,join,dirname } from 'node:path';
 const dist=resolve(import.meta.dirname,'..','dist');
-const mustExist=['manifest.json','popup.html','reader.html','ocr-sandbox.html','background.js','site-agent.js','reader-boot.js','models/PP-OCRv5_mobile_det.tar','models/en_PP-OCRv5_mobile_rec.tar'];
+const mustExist=['manifest.json','popup.html','reader.html','ocr-sandbox.html','offscreen.html','background.js','picker.js','reader-boot.js','models/PP-OCRv5_mobile_det.tar','models/en_PP-OCRv5_mobile_rec.tar'];
 for(const name of mustExist) if(!existsSync(join(dist,name))) throw new Error(`Missing build artifact: ${name}`);
 const manifest=JSON.parse(readFileSync(join(dist,'manifest.json'),'utf8'));
 if(manifest.manifest_version!==3)throw new Error('Expected Manifest V3');
 if(!manifest.content_security_policy?.extension_pages?.includes('wasm-unsafe-eval'))throw new Error('Missing MV3 WASM CSP');
-for(const page of ['popup.html','reader.html','ocr-sandbox.html']){
+for(const page of ['popup.html','reader.html','ocr-sandbox.html','offscreen.html']){
   const html=readFileSync(join(dist,page),'utf8');
   const scripts=[...html.matchAll(/<script\b[^>]*\bsrc=["']([^"']+)["']/gi)].map(m=>m[1]);
   const styles=[...html.matchAll(/<link\b[^>]*\bhref=["']([^"']+\.css(?:\?[^"']*)?)["']/gi)].map(m=>m[1]);
-  if(!scripts.length || (page !== 'ocr-sandbox.html' && !styles.length)) throw new Error(`${page}: missing compiled JavaScript or CSS reference`);
+  if(!scripts.length || (page === 'popup.html' && !styles.length)) throw new Error(`${page}: missing compiled JavaScript or CSS reference`);
   for(const url of [...scripts,...styles]){
     if (/^(?:https?:|\/\/|data:)/i.test(url))throw new Error(`${page}: references nonlocal asset ${url}`);
     const target=resolve(dist,url.replace(/^\//,'').split(/[?#]/,1)[0].replace(/^\.\//,''));
@@ -51,3 +51,7 @@ if (!html.includes('ocr-sandbox.html')) throw new Error('Reader must embed OCR s
 // The reader entry must only communicate with sandbox; SDK code loaded in
 // normal extension pages will be blocked by MV3 CSP at runtime.
 if (readFileSync(join(dist,'reader.html'),'utf8').includes('paddle-engine')) throw new Error('PaddleOCR imported directly into the extension reader');
+
+if(!manifest.permissions.includes('offscreen'))throw new Error('Offscreen permission missing');
+if(!readFileSync(join(dist,'offscreen.html'),'utf8').includes('ocr-sandbox.html'))throw new Error('Offscreen page does not host sandbox');
+if(readFileSync(join(dist,'reader.html'),'utf8').includes('id="processed"'))throw new Error('Preprocessing preview must be removed');

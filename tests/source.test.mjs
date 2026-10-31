@@ -49,24 +49,23 @@ test('sandbox has separated CSP and local model access',()=>{
   assert.ok(manifest.web_accessible_resources.some(r=>r.resources.includes('wasm/*.mjs')));
 });
 
-test('saved-site agent, configurable rules, and popup are wired in',()=>{
+test('four selector banner, offscreen worker and no preprocessing preview',()=>{
   const root=resolve(import.meta.dirname,'..');
-  const agent=readFileSync(resolve(root,'public/site-agent.js'),'utf8');
+  const picker=readFileSync(resolve(root,'public/picker.js'),'utf8');
+  const offscreen=readFileSync(resolve(root,'src/offscreen.js'),'utf8');
   const background=readFileSync(resolve(root,'public/background.js'),'utf8');
-  const reader=readFileSync(resolve(root,'src/reader.js'),'utf8');
-  const popup=readFileSync(resolve(root,'popup.html'),'utf8');
   const manifest=JSON.parse(readFileSync(resolve(root,'public/manifest.json'),'utf8'));
-  assert.match(agent,/new MutationObserver/);
-  assert.match(agent,/setInterval\(\(\)=>\{void check\(\);\},1000\)/);
-  assert.match(agent,/OFFLINE_OCR_APPLY_TEXT/);
-  assert.match(agent,/InputEvent\('input'/);
-  assert.match(agent,/lastApplied===revision/);
-  assert.match(agent,/HTMLImageElement/);
-  assert.match(agent,/backgroundImage/);
-  assert.match(background,/chrome\.storage\.local\.set/);
-  assert.match(background,/tabs\.onUpdated\.addListener/);
-  assert.match(reader,/matchesRules/);
-  assert.match(popup,/Saved websites/);
-  assert.match(popup,/Gaussian blur/);
-  assert.deepEqual(manifest.optional_host_permissions,['http://*/*','https://*/*']);
+  const page=readFileSync(resolve(root,'reader.html'),'utf8');
+  assert.match(picker,/new MutationObserver/);
+  assert.match(picker,/setInterval\(\(\)=>\{void check\(\);\},1000\)/);
+  assert.match(picker,/4\/4 — Select the submit button/);
+  assert.match(picker,/OFFLINE_OCR_REFRESH/);
+  assert.match(picker,/OFFLINE_OCR_APPLY_AND_SUBMIT/);
+  assert.match(picker,/MAX_REFRESHES=12/);
+  assert.match(picker,/id="banner"/);
+  assert.match(offscreen,/prepareImage/);
+  assert.match(offscreen,/chooseCandidate/);
+  assert.match(background,/chrome\.offscreen\.createDocument/);
+  assert.ok(manifest.permissions.includes('offscreen'));
+  assert.doesNotMatch(page,/id="processed"/);
 });

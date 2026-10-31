@@ -1,142 +1,100 @@
 'use strict';
-// The OCR UI runs in an isolated extension window. Website access is granted
-// individually by the user when a site configuration is saved.
-const IMAGE_PATTERN=/^data:image\/(?:png|jpe?g|webp|gif|bmp);base64,[A-Za-z0-9+/=\s]+$/i;
-const validImage=x=>typeof x==='string'&&x.length<=4_000_000&&IMAGE_PATTERN.test(x);
-const validId=x=>typeof x==='string'&&/^[0-9a-f]{32}$/.test(x);
-const validRevision=x=>Number.isSafeInteger(x)&&x>0;
-const errorText=e=>e?.message||String(e);
-function allowed(text,r){
-  const set=(r.digits?'0-9':'')+(r.lowercase?'a-z':'')+(r.uppercase?'A-Z':'');
-  return typeof text==='string' && Number.isInteger(r.length) && r.length>=1 && r.length<=24 &&
-    !!set && text.length===r.length && new RegExp(`^[${set}]+$`).test(text);
-}
-function validRules(r){return r&&typeof r==='object'&&Number.isInteger(r.length)&&r.length>=1&&r.length<=24&&
-  (r.digits===true||r.lowercase===true||r.uppercase===true)&&
-  ['grayscale','gaussian','threshold'].every(k=>typeof r[k]==='boolean')&&
-  ['auto','original','processed'].includes(r.variant);}
-function sitePattern(origin){const u=new URL(origin);if(!/^https?:$/.test(u.protocol))throw Error('Only http(s) sites can be saved.');return `${u.protocol}//${u.hostname}/*`;}
-function matchesSite(entry,url){try{const u=new URL(url);return u.origin===entry.origin&&(entry.scope!=='path'||u.pathname===entry.path);}catch{return false;}}
-function bestRule(saved,url){return saved.filter(e=>e.enabled!==false&&matchesSite(e,url)).sort((a,b)=>Number(b.scope==='path')-Number(a.scope==='path'))[0]||null;}
-async function trustedReader(sender){
-  const url=chrome.runtime.getURL('reader.html');
-  if(sender.url!==url || (sender.id!=null&&sender.id!==chrome.runtime.id) || (sender.frameId!=null&&sender.frameId!==0))return false;
-  if(sender.origin!=null&&sender.origin!==chrome.runtime.getURL('').replace(/\/$/,''))return false;
-  if(sender.tab){
-    const {readerWindowId}=await chrome.storage.session.get('readerWindowId');
-    if(!Number.isInteger(readerWindowId)||sender.tab.windowId!==readerWindowId|| (sender.tab.url&&sender.tab.url!==url))return false;
+// Only user-selected webpages can be acted on. OCR runs in an offscreen document.
+const IMAGE = /^data:image\/(?:png|jpe?g|webp|gif|bmp);base64,[A-Za-z0-9+/=\s]+$/i;
+const validImage = value => typeof value === 'string' && value.length <= 4_000_000 && IMAGE.test(value) &&
+  (() => {const b=value.slice(value.indexOf(',')+1).replace(/\s+/g,'');return b.length%4===0 && /^[A-Za-z0-9+/]+={0,2}$/.test(b);})();
+const validId = s => typeof s === 'string' && /^[a-f0-9]{32}$/.test(s);
+const validRev = n => Number.isSafeInteger(n) && n>0;
+const errorMessage = e => e?.message || String(e);
+const sourceMatches = (sender,ctx) => Number.isInteger(sender.tab?.id) && sender.tab.id===ctx.tabId && sender.frameId===0;
+const internalOCR = sender => sender.url === chrome.runtime.getURL('offscreen.html') &&
+  (sender.id==null || sender.id===chrome.runtime.id) && !sender.tab &&
+  (sender.frameId==null || sender.frameId===0) &&
+  (sender.origin==null || sender.origin===chrome.runtime.getURL('').replace(/\/$/,''));
+let creatingOffscreen=null;
+async function ensureOffscreen() {
+  if (await chrome.offscreen.hasDocument()) return;
+  if (!creatingOffscreen) {
+    creatingOffscreen=chrome.offscreen.createDocument({
+      url:'offscreen.html', reasons:['DOM_PARSER'],
+      justification:'Decode user-selected images and run local PaddleOCR without a visible window.'
+    }).finally(()=>{creatingOffscreen=null;});
   }
-  return true;
+  await creatingOffscreen;
 }
-async function readerWindow(){
-  const {readerWindowId}=await chrome.storage.session.get('readerWindowId');
-  if(Number.isInteger(readerWindowId)) {
-    try {const w=await chrome.windows.get(readerWindowId);if(w) return readerWindowId;}catch{}
-  }
-  const w=await chrome.windows.create({url:chrome.runtime.getURL('reader.html'),type:'popup',width:620,height:780});
-  if(Number.isInteger(w.id))await chrome.storage.session.set({readerWindowId:w.id});
-  return w.id;
+async function announce(job) {
+  // The offscreen document has ONLY the runtime API, never chrome.storage.
+  try {await chrome.runtime.sendMessage({type:'OFFLINE_OCR_JOB',job});}
+  catch { /* Offscreen page may still be initializing; it requests latest job on startup. */ }
 }
-async function stopMonitor(context){if(!context)return;try{await chrome.tabs.sendMessage(context.tabId,{type:'OFFLINE_OCR_MONITOR_STOP_REQUEST',monitorId:context.monitorId});}catch{}}
-async function savedSites(){const {savedSites=[]}=await chrome.storage.local.get('savedSites');return Array.isArray(savedSites)?savedSites:[];}
-async function saveSite(config,url){
-  if(!config || !validRules(config.rules)||!['origin','path'].includes(config.scope))throw Error('Invalid site configuration.');
-  for(const name of ['imageSelector','fieldSelector','anchorSelector'])if(typeof config[name]!=='string'||!config[name]||config[name].length>1000)throw Error('Invalid saved selector.');
-  const u=new URL(url),pattern=sitePattern(u.origin);
-  if(!await chrome.permissions.contains({origins:[pattern]}))throw Error('This website needs permission before its settings can be saved.');
-  const key=config.scope==='path'?u.origin+u.pathname:u.origin;
-  const entries=await savedSites();
-  const rule={id:key,key,origin:u.origin,path:config.scope==='path'?u.pathname:null,scope:config.scope,
-    imageSelector:config.imageSelector,fieldSelector:config.fieldSelector,anchorSelector:config.anchorSelector,
-    rules:config.rules,enabled:true,updatedAt:Date.now()};
-  const updated=[...entries.filter(e=>e.key!==key),rule].slice(-100);
-  await chrome.storage.local.set({savedSites:updated});
+async function tellTab(ctx,type,more={}) {
+  try {return await chrome.tabs.sendMessage(ctx.tabId,{type,monitorId:ctx.monitorId,revision:ctx.revision,...more});}
+  catch(e) {return {ok:false,error:errorMessage(e)};}
 }
-async function readSameOriginImage(message,sender){
-  if(!Number.isInteger(sender.tab?.id))throw Error('Image request has no source tab.');
-  const requested=new URL(message.url),page=new URL(sender.url||sender.tab.url);
-  if(!/^https?:$/.test(requested.protocol)||requested.origin!==page.origin) throw Error('Cross-origin image cannot be read without CORS or additional permission.');
-  const response=await fetch(requested.href,{credentials:'include',redirect:'error'});
-  if(!response.ok)throw Error(`Image returned HTTP ${response.status}`);
-  const contentType=(response.headers.get('content-type')||'').split(';')[0].trim().toLowerCase();
-  const mapping={'image/png':'png','image/jpeg':'jpeg','image/webp':'webp','image/gif':'gif','image/bmp':'bmp'};
-  const kind=mapping[contentType];if(!kind)throw Error(`Unsupported image response: ${contentType||'unknown'}`);
-  const bytes=await response.arrayBuffer();if(bytes.byteLength>2_800_000)throw Error('Image file is too large.');
-  const data=new Uint8Array(bytes);let binary='';for(let i=0;i<data.length;i+=8192)binary+=String.fromCharCode(...data.subarray(i,i+8192));
-  const dataURL=`data:image/${kind};base64,${btoa(binary)}`;
-  if(!validImage(dataURL))throw Error('Image encoding failed or exceeded limits.');
-  return {ok:true,dataURL};
+async function stopCurrent(ctx) {
+  if (ctx) await tellTab(ctx,'OFFLINE_OCR_MONITOR_STOP_REQUEST');
 }
-async function autoStart(tabId,url){
-  if(!Number.isInteger(tabId)||!/^https?:\/\//.test(url||''))return;
-  const rule=bestRule(await savedSites(),url);
-  if(!rule)return;
-  if(!await chrome.permissions.contains({origins:[sitePattern(rule.origin)]}))return;
-  try{
-    await chrome.scripting.executeScript({target:{tabId},files:['site-agent.js']});
-    await chrome.tabs.sendMessage(tabId,{type:'OFFLINE_OCR_AUTO_START',config:rule});
-  }catch(e){console.debug('Offline OCR: saved site unavailable:',errorText(e));}
-}
-async function handle(message,sender){
-  const tabId=sender.tab?.id;
-  if(message.type==='OFFLINE_OCR_READ_URL')return readSameOriginImage(message,sender);
-  if(message.type==='OFFLINE_OCR_MONITOR_START'){
-    if(!Number.isInteger(tabId)||!validImage(message.dataURL)||!validId(message.monitorId)||!validRules(message.config?.rules)) throw Error('Invalid monitoring selection.');
-    if(message.config.save===true)await saveSite(message.config,sender.url||sender.tab.url);
-    const {monitorContext:prev}=await chrome.storage.session.get('monitorContext');
-    if(prev && (prev.tabId!==tabId||prev.monitorId!==message.monitorId))await stopMonitor(prev);
-    const context={tabId,monitorId:message.monitorId,revision:1,rules:message.config.rules};
-    await chrome.storage.session.set({monitorContext:context,ocrJob:{...context,dataURL:message.dataURL},selectedImage:message.dataURL});
-    await readerWindow();return {ok:true};
-  }
-  if(message.type==='OFFLINE_OCR_MONITOR_IMAGE'){
-    if(!Number.isInteger(tabId)||!validId(message.monitorId)||!validRevision(message.revision)||!validImage(message.dataURL)) throw Error('Invalid changed image.');
-    const {monitorContext:curr}=await chrome.storage.session.get('monitorContext');
-    if(!curr||curr.tabId!==tabId||curr.monitorId!==message.monitorId)return {ok:false,error:'Monitor is no longer active.'};
-    if(message.revision<=curr.revision)return {ok:true,skipped:true};
-    const next={...curr,revision:message.revision};
-    await chrome.storage.session.set({monitorContext:next,ocrJob:{...next,dataURL:message.dataURL},selectedImage:message.dataURL});
+async function handler(m,sender) {
+  if (m.type==='OFFLINE_OCR_MONITOR_START') {
+    if (!Number.isInteger(sender.tab?.id) || sender.frameId!==0 || !validId(m.monitorId) || !validImage(m.dataURL)) throw Error('Invalid monitor selection');
+    const {monitorContext:old}=await chrome.storage.session.get('monitorContext');
+    if (old) await stopCurrent(old);
+    const ctx={tabId:sender.tab.id,monitorId:m.monitorId,revision:1};
+    const job={...ctx,dataURL:m.dataURL};
+    await chrome.storage.session.set({monitorContext:ctx,ocrJob:job});
+    await ensureOffscreen();
+    await announce(job);
     return {ok:true};
   }
-  if(message.type==='OFFLINE_OCR_MONITOR_STOP'){
-    const {monitorContext:curr}=await chrome.storage.session.get('monitorContext');
-    if(!curr)return {ok:true};
-    const fromReader=await trustedReader(sender);
-    if(sender.tab && !fromReader && (sender.tab.id!==curr.tabId||message.monitorId!==curr.monitorId))return {ok:false,error:'Not the owner of this monitor.'};
-    if(!sender.tab && !fromReader && sender.url!==chrome.runtime.getURL('popup.html'))return {ok:false,error:'Untrusted stop request.'};
-    await chrome.storage.session.set({monitorContext:null,ocrJob:null});await stopMonitor(curr);return {ok:true};
-  }
-  if(message.type==='OFFLINE_OCR_FILL'){
-    if(!await trustedReader(sender))throw Error('Untrusted fill sender.');
-    const {monitorContext:curr}=await chrome.storage.session.get('monitorContext');
-    if(!curr||curr.monitorId!==message.monitorId||curr.revision!==message.revision)return {ok:false,error:'Image changed; stale text ignored.'};
-    if(!allowed(message.text,curr.rules))return {ok:false,error:'Text does not match the configured length or character types.'};
-    try{return await chrome.tabs.sendMessage(curr.tabId,{type:'OFFLINE_OCR_APPLY_TEXT',monitorId:curr.monitorId,revision:curr.revision,text:message.text});}
-    catch(e){return {ok:false,error:`Cannot reach selected input: ${errorText(e)}`};}
-  }
-  if(message.type==='OFFLINE_OCR_REMOVE_SITE'){
-    if(sender.url!==chrome.runtime.getURL('popup.html'))throw Error('Only the extension popup may remove a site.');
-    const entries=await savedSites();const match=entries.find(e=>e.key===message.key);
-    if(!match)return {ok:true};
-    await chrome.storage.local.set({savedSites:entries.filter(e=>e.key!==message.key)});
-    const {monitorContext:curr}=await chrome.storage.session.get('monitorContext');
-    if(curr){try{const tab=await chrome.tabs.get(curr.tabId);if(matchesSite(match,tab.url)){await stopMonitor(curr);await chrome.storage.session.set({monitorContext:null,ocrJob:null});}}catch{}}
+  const {monitorContext:ctx}=await chrome.storage.session.get('monitorContext');
+  if (m.type==='OFFLINE_OCR_MONITOR_STOP') {
+    if (!ctx) return {ok:true};
+    if (!sourceMatches(sender,ctx) || m.monitorId!==ctx.monitorId) return {ok:false,error:'Not the owning webpage.'};
+    await chrome.storage.session.set({monitorContext:null,ocrJob:null});
+    await announce(null);
+    await stopCurrent(ctx);
     return {ok:true};
   }
-  return {ok:false,error:'Unsupported message type.'};
+  if (m.type==='OFFLINE_OCR_MONITOR_IMAGE') {
+    if (!ctx || !sourceMatches(sender,ctx) || m.monitorId!==ctx.monitorId || !validRev(m.revision) || !validImage(m.dataURL))
+      return {ok:false,error:'Invalid or expired image update'};
+    if (m.revision<=ctx.revision) return {ok:true,skipped:true};
+    const updated={...ctx,revision:m.revision};
+    await chrome.storage.session.set({monitorContext:updated,ocrJob:{...updated,dataURL:m.dataURL}});
+    await ensureOffscreen();
+    await announce({...updated,dataURL:m.dataURL});
+    return {ok:true};
+  }
+  // Inference commands can only originate from the extension-owned offscreen document.
+  if (!internalOCR(sender)) return {ok:false,error:'Untrusted OCR sender'};
+  if (m.type==='OFFLINE_OCR_GET_JOB') {
+    const {ocrJob}=await chrome.storage.session.get('ocrJob');
+    return {ok:true,job:ocrJob||null};
+  }
+  if (!ctx || !validId(m.monitorId) || m.monitorId!==ctx.monitorId || !validRev(m.revision) || m.revision!==ctx.revision)
+    return {ok:false,error:'Stale image; OCR result discarded'};
+  if (m.type==='OFFLINE_OCR_IS_CURRENT') return {ok:true};
+  if (m.type==='OFFLINE_OCR_STATUS') {
+    return tellTab(ctx,'OFFLINE_OCR_STATUS',{message:String(m.message||'').slice(0,180),level:m.level==='error'?'error':'info'});
+  }
+  if (m.type==='OFFLINE_OCR_RETRY') return tellTab(ctx,'OFFLINE_OCR_REFRESH');
+  if (m.type==='OFFLINE_OCR_SUBMIT') {
+    if (!/^\d{6}$/.test(m.digits||'') || !(m.score>=0.85 && m.score<=1)) return {ok:false,error:'Only confident, exact six-digit results may be submitted'};
+    return tellTab(ctx,'OFFLINE_OCR_APPLY_AND_SUBMIT',{digits:m.digits});
+  }
+  return {ok:false,error:'Unsupported OCR command'};
 }
-chrome.runtime.onMessage.addListener((message,sender,reply)=>{
-  if(!message || typeof message.type!=='string'||!message.type.startsWith('OFFLINE_OCR_'))return false;
-  handle(message,sender).then(reply,error=>reply({ok:false,error:errorText(error)}));
+chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
+  if (typeof msg?.type!=='string' || !msg.type.startsWith('OFFLINE_OCR_') || msg.type==='OFFLINE_OCR_JOB') return false;
+  handler(msg,sender).then(respond,e=>respond({ok:false,error:errorMessage(e)}));
   return true;
-});
-chrome.tabs.onUpdated.addListener((id,change,tab)=>{
-  if(change.status==='complete'||change.url)void autoStart(id,tab.url).catch(()=>{});
-});
-chrome.tabs.onActivated.addListener(async ({tabId})=>{
-  try{const tab=await chrome.tabs.get(tabId);await autoStart(tabId,tab.url);}catch{}
 });
 chrome.tabs.onRemoved.addListener(async tabId=>{
-  const {monitorContext:curr}=await chrome.storage.session.get('monitorContext');
-  if(curr?.tabId===tabId)await chrome.storage.session.set({monitorContext:null,ocrJob:null});
+  const {monitorContext:ctx}=await chrome.storage.session.get('monitorContext');
+  if (ctx?.tabId===tabId){await chrome.storage.session.set({monitorContext:null,ocrJob:null});await announce(null);}
+});
+chrome.tabs.onUpdated.addListener(async (tabId,change)=>{
+  if (change.status!=='loading') return;
+  const {monitorContext:ctx}=await chrome.storage.session.get('monitorContext');
+  if (ctx?.tabId===tabId){await chrome.storage.session.set({monitorContext:null,ocrJob:null});await announce(null);}
 });

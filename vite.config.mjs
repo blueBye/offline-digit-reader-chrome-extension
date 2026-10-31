@@ -15,7 +15,8 @@ export default defineConfig({
       input: {
         popup: resolve(import.meta.dirname, 'popup.html'),
         reader: resolve(import.meta.dirname, 'reader.html'),
-        sandbox: resolve(import.meta.dirname, 'ocr-sandbox.html')
+        sandbox: resolve(import.meta.dirname, 'ocr-sandbox.html'),
+        offscreen: resolve(import.meta.dirname, 'offscreen.html')
       },
     },
   },

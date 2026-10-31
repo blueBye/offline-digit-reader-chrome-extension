@@ -18,18 +18,13 @@
   <div id="status" role="status" class="status">Reading selected image…</div>
   <section class="panel"><h2>Selected image</h2><canvas id="original" aria-label="Original image"></canvas></section>
   <section class="panel">
-    <h2>OCR input / preprocessing preview</h2>
-    <canvas id="processed" aria-label="Image sent to PaddleOCR"></canvas>
-    <p class="row-note" id="rule-summary">Preprocessing is configured in the extension's Current tab.</p>
-  </section>
-  <section class="panel">
-    <h2>Recognized text (editable)</h2>
-    <input id="result" type="text" maxlength="24" inputmode="text" autocomplete="off" spellcheck="false" aria-label="Recognized characters" placeholder="Recognized characters">
+    <h2>Recognized digits (editable)</h2>
+    <input id="result" type="text" maxlength="6" pattern="[0-9]{6}" inputmode="numeric" autocomplete="off" spellcheck="false" aria-label="Six digits" placeholder="— — — — — —">
     <div id="details" class="details" aria-live="polite"></div>
     <div id="candidate-list" aria-live="polite"></div>
     <div class="actions"><button id="rerun" class="primary">Run PaddleOCR</button><button id="copy">Copy result</button><button id="fill" disabled>Fill selected field</button></div>
   </section>
-  <p class="footnote">Local inference only. Accuracy on distorted digit images is not guaranteed; verify the result. In monitoring mode, valid readings matching your settings are entered into your selected input. It never submits the form.</p>
+  <p class="footnote">Local inference only. Accuracy on distorted digit images is not guaranteed; verify the result. In monitoring mode, valid six-digit readings are entered into your selected input. In four-element monitoring mode the extension can refresh and submit automatically.</p>
   <details class="diagnostics"><summary>Diagnostics</summary><pre id="diagnostics" aria-live="polite"></pre></details>
   <!-- This tiny plain script handles image loading even when the OCR library fails. -->
   <script src="/reader-boot.js"></script>

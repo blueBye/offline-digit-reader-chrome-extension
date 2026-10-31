@@ -8,7 +8,7 @@ import { resolve, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 export function validateSource(root) {
-  for (const page of ['popup.html', 'reader.html', 'ocr-sandbox.html']) {
+  for (const page of ['popup.html', 'reader.html', 'ocr-sandbox.html', 'offscreen.html']) {
     const filepath = resolve(root, page);
     if (!existsSync(filepath)) throw new Error(`Missing source page: ${page}`);
     const html = readFileSync(filepath, 'utf8');
@@ -25,6 +25,7 @@ export function validateSource(root) {
         throw new Error(`Vite module script must not be imported from public/: ${url}`);
       }
     }
+    if (page === 'offscreen.html' && !html.includes('src="/src/offscreen.js"')) throw new Error('Offscreen OCR host missing');
     if (page === 'ocr-sandbox.html' && !html.includes('src="/src/ocr-sandbox.js"')) throw new Error('OCR sandbox module missing');
     if (page === 'reader.html') {
       if (!html.includes('src="/reader-boot.js"')) throw new Error('Reader bootstrap is missing from reader.html');

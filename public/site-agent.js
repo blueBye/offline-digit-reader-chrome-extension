@@ -204,7 +204,10 @@
     const response=await chrome.runtime.sendMessage({type:'OFFLINE_OCR_MONITOR_START',monitorId,dataURL:initial,
       config:{imageSelector,anchorSelector,fieldSelector,rules:config.rules,scope:config.scope||'origin',save:config.save===true}});
     if(!response?.ok) throw new Error(response?.error||'Unable to start monitoring.');
-    agent.monitor={monitorId,stop,config};
+    agent.monitor={monitorId,stop,config,updateRules(rules,nextRevision){
+      if(!Number.isSafeInteger(nextRevision)||nextRevision<=revision)return {ok:false,error:'Outdated settings update.'};
+      revision=nextRevision;lastApplied=0;config.rules=rules;return {ok:true};
+    }};
     chrome.runtime.onMessage.addListener(onMessage);
     const originalStop=stop;
     agent.monitor.stop=(notify=true)=>{chrome.runtime.onMessage.removeListener(onMessage);originalStop(notify);};
@@ -289,6 +292,10 @@
         throw new Error('Saved components not found on this page.');
       })().then(()=>reply({ok:true}),e=>reply({ok:false,error:e.message}));
       return true;
+    }
+    if(message.type==='OFFLINE_OCR_CHANGE_RULES'){
+      if(!agent.monitor || agent.monitor.monitorId!==message.monitorId){reply({ok:false,error:'No matching monitor.'});return false;}
+      reply(agent.monitor.updateRules(message.rules,message.revision));return false;
     }
     if(message.type==='OFFLINE_OCR_STOP_LOCAL'){agent.monitor?.stop();reply({ok:true});return false;}
     return false;

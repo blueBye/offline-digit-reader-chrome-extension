@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Serve an offline, cycling six-digit OCR extension test page.
+"""Serve an offline, manually refreshed six-digit OCR extension test page.
 
-Standard-library only. Place captcha_data_uri.txt beside this file, then run:
+Standard-library only. Optionally place captcha_data_uri.txt beside this file, then run:
     python server.py
 
 Open http://127.0.0.1:8000 in Chrome. The image always remains a 200x50
@@ -14,8 +14,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_URI = (BASE_DIR / "captcha_data_uri.txt").read_text(encoding="ascii").strip()
-if not DATA_URI.startswith("data:image/jpeg;base64,"):
+image_path = BASE_DIR / "captcha_data_uri.txt"
+DATA_URI = image_path.read_text(encoding="ascii").strip() if image_path.exists() else ""
+if DATA_URI and not DATA_URI.startswith("data:image/jpeg;base64,"):
     raise ValueError("captcha_data_uri.txt must contain a JPEG base64 data URI")
 
 PAGE = r"""<!doctype html>
@@ -59,9 +60,8 @@ PAGE = r"""<!doctype html>
 <body>
 <main>
   <h1>Offline OCR test form</h1>
-  <p>Click <strong>Start</strong> to show <strong>Wait</strong> for 3 seconds, display your
-     original image for 5 seconds, then cycle through new noisy six-digit JPEGs every
-     5 seconds. <strong>Restart</strong> begins the sequence again.</p>
+  <p>Click <strong>Refresh CAPTCHA</strong> to generate a new six-digit image instantly.
+     Images stay unchanged until you refresh them; there is no countdown or automatic cycling.</p>
   <section class="panel">
     <form id="test-form" autocomplete="off">
       <label for="description">Description</label>
@@ -75,7 +75,7 @@ PAGE = r"""<!doctype html>
 
       <label for="captcha-input">Enter the six digits shown in the image</label>
       <help id="captcha-help" aria-label="Six-digit test image">
-        <img id="captcha-image" width="200" height="50" alt="Original OCR test image" src="__IMAGE_DATA_URI__">
+        <img id="captcha-image" width="200" height="50" alt="Six-digit OCR test image" src="__IMAGE_DATA_URI__">
       </help>
       <div class="note">The same <code>#captcha-image</code> element is updated in place.
         Every image is a 200 × 50 JPEG base64 data URI, including the original.
@@ -83,16 +83,13 @@ PAGE = r"""<!doctype html>
 
       <div class="cycle-state" aria-live="polite" aria-atomic="true">
         <strong id="cycle-phase">Ready</strong>
-        <span id="cycle-timer"> · Click Start to begin</span>
         <div id="cycle-score" class="score">Generated captchas: 0 · Correct: 0 / 0</div>
       </div>
-
       <div class="buttons">
-        <button id="start-button" type="button">Start</button>
-        <button id="restart-button" type="button" class="secondary">Restart</button>
+        <button id="refresh-button" type="button" class="secondary">Refresh CAPTCHA</button>
       </div>
 
-      <input id="captcha-input" name="captcha" type="text" inputmode="numeric" maxlength="6"
+     <input id="captcha-input" name="captcha" type="text" inputmode="numeric" maxlength="6"
              pattern="[0-9]{6}" placeholder="000000" aria-label="Six-digit value"
              style="margin-top: 16px">
 
@@ -112,43 +109,25 @@ PAGE = r"""<!doctype html>
   const input = document.querySelector('#captcha-input');
   const status = document.querySelector('#status');
   const phaseLabel = document.querySelector('#cycle-phase');
-  const timerLabel = document.querySelector('#cycle-timer');
   const scoreLabel = document.querySelector('#cycle-score');
-  const startButton = document.querySelector('#start-button');
-  const originalDataUri = image.src;
+  const originalDataUri = image.getAttribute('src');
 
   const WIDTH = 200;
   const HEIGHT = 50;
-  const WAIT_MS = 3000;
-  const IMAGE_MS = 5000;
   const canvas = document.createElement('canvas');
   canvas.width = WIDTH;
   canvas.height = HEIGHT;
   const ctx = canvas.getContext('2d');
 
-  let timeoutId = null;
-  let countdownId = null;
-  let deadline = 0;
   let phase = 'ready';
   let expectedDigits = null;
-  let generated = 0;
-  let attempts = 0;
-  let correct = 0;
-  let previousDigits = null;
+   let generated = 0;
+   let attempts = 0;
+   let correct = 0;
+   let previousDigits = null;
 
   function rand(min, max) { return min + Math.random() * (max - min); }
   function randInt(min, max) { return Math.floor(rand(min, max + 1)); }
-
-  function makeTextImage(message) {
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, WIDTH, HEIGHT);
-    ctx.fillStyle = '#343b49';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = '22px Arial, sans-serif';
-    ctx.fillText(message, WIDTH / 2, HEIGHT / 2);
-    return canvas.toDataURL('image/jpeg', 0.88);
-  }
 
   function generateSixDigits() {
     let digits;
@@ -167,15 +146,15 @@ PAGE = r"""<!doctype html>
     ctx.fillStyle = '#fffefe';
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
-    // Subtle colored salt-and-pepper noise, including some dark specks.
-    for (let i = 0; i < 1200; i++) {
-      const r = randInt(80, 255);
-      const g = randInt(75, 255);
-      const b = randInt(85, 255);
-      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${rand(0.23, 0.75)})`;
-      const s = Math.random() < 0.13 ? rand(1, 1.7) : 1;
-      ctx.fillRect(rand(0, WIDTH), rand(0, HEIGHT), s, s);
-    }
+    // More visible, thicker color speckles across the whole image.
+     for (let i = 0; i < 1750; i++) {
+       const r = randInt(55, 230);
+       const g = randInt(50, 225);
+       const b = randInt(60, 235);
+       ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${rand(0.45, 0.95)})`;
+       const size = rand(0.9, 2.2);
+       ctx.fillRect(rand(0, WIDTH), rand(0, HEIGHT), size, size);
+     }
 
     // Centrally placed characters, slightly uneven to resemble the reference.
     const baseX = 58 + rand(-4, 4);
@@ -192,32 +171,34 @@ PAGE = r"""<!doctype html>
       ctx.restore();
     }
 
-    // A thin dark line running diagonally across much of the image, like
-    // the supplied sample. Randomized positions prevent exact repetitions.
-    const top = rand(-2, 9);
-    const bottom = rand(35, 53);
-    ctx.strokeStyle = `rgba(18, 18, 18, ${rand(0.66, 0.93)})`;
-    ctx.lineWidth = rand(0.65, 1.25);
-    ctx.beginPath();
-    ctx.moveTo(-5, top);
-    ctx.lineTo(WIDTH + 5, bottom);
-    ctx.stroke();
+    // Two to four genuinely independent crossing lines with randomized
+     // positions, directions, thickness, colors and occasional bends.
+     for (let i = 0, count = randInt(2, 4); i < count; i++) {
+       const fromLeft = Math.random() < 0.5;
+       const x0 = fromLeft ? rand(-12, 28) : rand(WIDTH - 28, WIDTH + 12);
+       const x1 = fromLeft ? rand(WIDTH - 28, WIDTH + 12) : rand(-12, 28);
+       const y0 = rand(-8, HEIGHT + 8);
+       const y1 = rand(-8, HEIGHT + 8);
+       ctx.beginPath();
+       ctx.moveTo(x0, y0);
+       if (Math.random() < 0.4) {
+         ctx.quadraticCurveTo(rand(50, 150), rand(-15, HEIGHT + 15), x1, y1);
+       } else {
+         ctx.lineTo(x1, y1);
+       }
+       const shade = randInt(15, 85);
+       ctx.strokeStyle = `rgba(${shade}, ${shade}, ${shade}, ${rand(0.65, 0.98)})`;
+       ctx.lineWidth = rand(1.4, 2.7);
+       ctx.lineCap = 'round';
+       ctx.stroke();
+     }
 
-    // A few shorter pale crossing strokes and black noise flecks.
-    for (let i = 0; i < 3; i++) {
-      const x = rand(-20, WIDTH - 30);
-      const y = rand(0, HEIGHT);
-      ctx.beginPath();
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + rand(15, 75), y + rand(-11, 11));
-      ctx.lineWidth = rand(0.3, 0.7);
-      ctx.strokeStyle = `rgba(${randInt(30, 100)}, ${randInt(30, 100)}, ${randInt(30, 100)}, ${rand(0.20, 0.45)})`;
-      ctx.stroke();
-    }
-    for (let i = 0; i < 245; i++) {
-      ctx.fillStyle = `rgba(14, 18, 23, ${rand(0.14, 0.65)})`;
-      ctx.fillRect(rand(0, WIDTH), rand(0, HEIGHT), rand(0.3, 1), rand(0.3, 1));
-    }
+     // Darker and larger foreground flecks; these overlap the digits/lines.
+     for (let i = 0; i < 360; i++) {
+       ctx.fillStyle = `rgba(12, 17, 24, ${rand(0.30, 0.80)})`;
+       const size = rand(0.65, 1.8);
+       ctx.fillRect(rand(0, WIDTH), rand(0, HEIGHT), size, size);
+     }
     ctx.restore();
     return canvas.toDataURL('image/jpeg', 0.86);
   }
@@ -239,61 +220,27 @@ PAGE = r"""<!doctype html>
     scoreLabel.textContent = `Generated captchas: ${generated} · Correct: ${correct} / ${attempts}`;
   }
 
-  function updateTimer() {
-    if (!deadline) return;
-    const seconds = Math.max(0, (deadline - performance.now()) / 1000).toFixed(1);
-    timerLabel.textContent = ` · Next image in ${seconds}s`;
-  }
-
-  function scheduleNext(delay, callback) {
-    clearTimeout(timeoutId);
-    deadline = performance.now() + delay;
-    updateTimer();
-    timeoutId = setTimeout(callback, delay);
-  }
-
-  function showOriginal() {
-    phase = 'original';
-    phaseLabel.textContent = 'Original image';
-    showImage(originalDataUri, 'Original six-digit image');
-    scheduleNext(IMAGE_MS, showGenerated);
-  }
-
   function showGenerated() {
-    phase = 'generated';
-    const digits = generateSixDigits();
-    generated += 1;
-    phaseLabel.textContent = `Generated image #${generated}`;
-    showImage(makeNoisyImage(digits), 'Generated six-digit image', digits);
-    updateScore();
-    scheduleNext(IMAGE_MS, showGenerated);
-  }
+     phase = 'generated';
+     const digits = generateSixDigits();
+     generated += 1;
+     phaseLabel.textContent = `Generated image #${generated}`;
+     showImage(makeNoisyImage(digits), 'Generated six-digit image', digits);
+     updateScore();
+   }
 
-  function restartSequence() {
-    clearTimeout(timeoutId);
-    clearInterval(countdownId);
-    timeoutId = null;
-    deadline = 0;
-    generated = 0;
-    attempts = 0;
-    correct = 0;
-    previousDigits = null;
-    phase = 'wait';
-    updateScore();
-    phaseLabel.textContent = 'Wait';
-    startButton.disabled = true;
-    showImage(makeTextImage('Wait'), 'Wait');
-    countdownId = setInterval(updateTimer, 100);
-    scheduleNext(WAIT_MS, showOriginal);
-  }
-
-  startButton.addEventListener('click', restartSequence);
-  document.querySelector('#restart-button').addEventListener('click', restartSequence);
+   document.querySelector('#refresh-button').addEventListener('click', showGenerated);
+   if (originalDataUri) {
+     phase = 'original';
+     phaseLabel.textContent = 'Original image';
+   } else {
+     showGenerated();
+   }
 
   form.addEventListener('submit', (event) => {
     event.preventDefault();
-    if (phase === 'wait' || phase === 'ready') {
-      status.textContent = 'Wait until a six-digit image appears.';
+    if (phase === 'ready') {
+      status.textContent = 'No CAPTCHA is available yet.';
       status.style.color = '#946200';
       return;
     }
@@ -343,7 +290,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    parser = ArgumentParser(description="Local six-digit cycling image test server")
+    parser = ArgumentParser(description="Local six-digit manual-refresh image test server")
     parser.add_argument("--port", type=int, default=8000, help="Listening port (default: 8000)")
     args = parser.parse_args()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)

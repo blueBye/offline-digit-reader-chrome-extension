@@ -38,13 +38,12 @@ async function handler(m,sender) {
   if (m.type==='OFFLINE_OCR_MONITOR_START') {
     if (!Number.isInteger(sender.tab?.id) || sender.frameId!==0 || !validId(m.monitorId) || !validImage(m.dataURL)) throw Error('Invalid monitor selection');
     const {monitorContext:old}=await chrome.storage.session.get('monitorContext');
-    if (old) await stopCurrent(old);
-    const ctx={tabId:sender.tab.id,monitorId:m.monitorId,revision:1};
+    if (old && old.monitorId!==m.monitorId) await stopCurrent(old);
+    const ctx={tabId:sender.tab.id,monitorId:m.monitorId,revision:1,pageURL:sender.url||'',lastSeen:Date.now()};
     const job={...ctx,dataURL:m.dataURL};
     await chrome.storage.session.set({monitorContext:ctx,ocrJob:job});
-    await ensureOffscreen();
-    await announce(job);
-    return {ok:true};
+    try {await ensureOffscreen();await announce(job);return {ok:true};}
+    catch(e){return {ok:true,warning:`OCR host temporarily unavailable: ${errorMessage(e)}`};}
   }
   const {monitorContext:ctx}=await chrome.storage.session.get('monitorContext');
   if (m.type==='OFFLINE_OCR_MONITOR_STOP') {
@@ -59,11 +58,26 @@ async function handler(m,sender) {
     if (!ctx || !sourceMatches(sender,ctx) || m.monitorId!==ctx.monitorId || !validRev(m.revision) || !validImage(m.dataURL))
       return {ok:false,error:'Invalid or expired image update'};
     if (m.revision<=ctx.revision) return {ok:true,skipped:true};
-    const updated={...ctx,revision:m.revision};
+    const updated={...ctx,revision:m.revision,lastSeen:Date.now()};
     await chrome.storage.session.set({monitorContext:updated,ocrJob:{...updated,dataURL:m.dataURL}});
-    await ensureOffscreen();
-    await announce({...updated,dataURL:m.dataURL});
-    return {ok:true};
+    try {await ensureOffscreen();await announce({...updated,dataURL:m.dataURL});return {ok:true};}
+    catch(e){return {ok:true,warning:`OCR host temporarily unavailable: ${errorMessage(e)}`};}
+  }
+  // An authenticated page heartbeat recreates a missing offscreen document
+  // after Chrome suspends it or its initialization fails. This never submits.
+  if (m.type==='OFFLINE_OCR_HEALTHCHECK') {
+    if(!ctx || !sourceMatches(sender,ctx) || m.monitorId!==ctx.monitorId)
+      return {ok:false,error:'Monitor is not registered'};
+    try {
+      // A live page heartbeat is also a lease renewal. Navigation or a
+      // crashed content script stops renewing it; old jobs can't run forever.
+      const renewed={...ctx,lastSeen:Date.now()};
+      await chrome.storage.session.set({monitorContext:renewed});
+      await ensureOffscreen();
+      const {ocrJob}=await chrome.storage.session.get('ocrJob');
+      if(ocrJob)await announce(ocrJob);
+      return {ok:true};
+    } catch(e){return {ok:false,error:`OCR host unavailable: ${errorMessage(e)}`};}
   }
   // Inference commands can only originate from the extension-owned offscreen document.
   if (!internalOCR(sender)) return {ok:false,error:'Untrusted OCR sender'};
@@ -71,7 +85,7 @@ async function handler(m,sender) {
     const {ocrJob}=await chrome.storage.session.get('ocrJob');
     return {ok:true,job:ocrJob||null};
   }
-  if (!ctx || !validId(m.monitorId) || m.monitorId!==ctx.monitorId || !validRev(m.revision) || m.revision!==ctx.revision)
+  if (!ctx || Date.now()-(ctx.lastSeen||0)>60000 || !validId(m.monitorId) || m.monitorId!==ctx.monitorId || !validRev(m.revision) || m.revision!==ctx.revision)
     return {ok:false,error:'Stale image; OCR result discarded'};
   if (m.type==='OFFLINE_OCR_IS_CURRENT') return {ok:true};
   if (m.type==='OFFLINE_OCR_STATUS') {
@@ -89,12 +103,11 @@ chrome.runtime.onMessage.addListener((msg,sender,respond)=>{
   handler(msg,sender).then(respond,e=>respond({ok:false,error:errorMessage(e)}));
   return true;
 });
-chrome.tabs.onRemoved.addListener(async tabId=>{
+chrome.tabs.onRemoved.addListener(tabId=>{void (async()=>{
   const {monitorContext:ctx}=await chrome.storage.session.get('monitorContext');
   if (ctx?.tabId===tabId){await chrome.storage.session.set({monitorContext:null,ocrJob:null});await announce(null);}
-});
-chrome.tabs.onUpdated.addListener(async (tabId,change)=>{
-  if (change.status!=='loading') return;
-  const {monitorContext:ctx}=await chrome.storage.session.get('monitorContext');
-  if (ctx?.tabId===tabId){await chrome.storage.session.set({monitorContext:null,ocrJob:null});await announce(null);}
-});
+})().catch(e=>console.warn('OCR cleanup after tab close failed:',errorMessage(e)));});
+// Do NOT erase monitorContext on a generic tabs.onUpdated({status:'loading'}).
+// Such a notification can arrive after the new document has registered its
+// monitor, wiping out its job. Pagehide, a new monitor registration, tab close,
+// and the heartbeat lease safely govern the lifecycle instead.

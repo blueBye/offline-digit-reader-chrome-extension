@@ -1,4 +1,4 @@
-# Offline Six-Digit Image Reader — PaddleOCR v3.0.2
+# Offline Six-Digit Image Reader — PaddleOCR v3.0.3
 
 Chrome Manifest V3 extension. Recognizes a locally embedded six-digit image using local PP-OCRv5 ONNX models, fills a selected field, and optionally clicks a selected form submit button. No OCR API, CDN or external runtime service is used. Only use on websites where you have permission to automate the workflow.
 
@@ -125,3 +125,46 @@ python tests/browser-monitor-smoke.py
 
 **Note:** These tests mock Chrome APIs and model inference; they do not
 substitute for a full model-backed production build and on-device validation.
+
+## v3.0.3: Navigation and missing-CAPTCHA recovery
+
+This fixes the exact sequence: **CAPTCHA page → home page without a CAPTCHA →
+another CAPTCHA page on the same hostname**. The saved per-domain settings are
+retained throughout, and the extension automatically resumes when its four
+configured controls return. No need to reopen the popup or reconfigure.
+
+- A page with missing/disabled/hidden CAPTCHA controls is now a normal idle
+  state. The content script quietly waits for controls instead of showing an
+  error banner, refreshing unrelated content, or starting the OCR model.
+- Active monitoring pauses when a SPA changes its URL or removes/replaces/hides
+  the form for more than two seconds. It releases the previous monitor and
+  watches for a usable form. A new form gets a fresh monitor ID, even if its
+  embedded image bytes are exactly the same as the previous page's.
+- Recognition results and refresh requests check that the **same page and
+  same form** are still active before acting. A result from the old page
+  cannot fill or click the new page's controls.
+- The background no longer clears the active OCR job on a generic tab
+  `loading` notification, which could arrive after a newly loaded page
+  registered its job. Each monitor sends a heartbeat; old job responses are
+  rejected after a sixty-second lease if monitoring disappears unexpectedly.
+- Leaving a page cancels any in-progress inference sandbox, rather than
+  making the next CAPTCHA wait for a timed-out inference from the previous
+  page. No new model files or extension permissions are required.
+
+**Update:** Extract the v3.0.3 hotfix ZIP **over your project source root**,
+keeping your existing `public/models/*.tar` and `node_modules/`. Run
+`pnpm test` and `pnpm run build`, reload the **unpacked `dist/` extension**
+from `chrome://extensions`, then reload all already-open pages on the affected
+site once. Simply extracting the hotfix ZIP does *not* update the installed
+extension until the build and Chrome extension reload have been performed.
+
+New navigation regression test (model inference is mocked):
+
+```bash
+python tests/browser-navigation-recovery.py
+```
+
+The repeated `CleanUnusedInitializersAndNodeArgs` line is an ONNX graph
+optimizer warning, not proof of a model crash. Version 3.0.3 addresses the
+page/navigation lifecycle separately; it does not modify the recognition
+models. A model-backed Chromium run still requires your local ONNX archives.

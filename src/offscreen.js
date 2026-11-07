@@ -114,6 +114,7 @@ async function process(job){
     lastStage='decoding selected image with ImageBitmap';
     await status(job,'Decoding selected image locally…');
     img=await decodeImage(job.dataURL);
+    if(!(await send(job,'OFFLINE_OCR_IS_CURRENT'))?.ok)return;
     const {width,height}=imageDimensions(img);
     await status(job,`Image decoded (${width}×${height}); preparing OCR…`);
     phase='engine';
@@ -187,6 +188,11 @@ function queue(job){
   if(!job?.monitorId||!Number.isSafeInteger(job.revision)||typeof job.dataURL!=='string')return;
   const key=jobKey(job);
   if(lastAcceptedKey===key)return;
+  if(activeJob && activeJob.monitorId!==job.monitorId){
+    // A new page takes precedence over the old model prediction.
+    try{resetSandbox('Monitoring moved to a different page');}
+    catch(error){console.warn('OCR sandbox replacement failed:',errorText(error));}
+  }
   cancelRetry();retryCount=0;
   lastAcceptedKey=key;
   newest=job;void pump();
@@ -194,7 +200,13 @@ function queue(job){
 chrome.runtime.onMessage.addListener((m,sender,respond)=>{
   if(m?.type!=='OFFLINE_OCR_JOB'||sender.id!==chrome.runtime.id||sender.tab)return false;
   if(m.job)queue(m.job);
-  else {newest=null;lastAcceptedKey=null;cancelRetry();retryCount=0;}
+  else {
+    newest=null;lastAcceptedKey=null;cancelRetry();retryCount=0;
+    // An OCR prediction from the previous page may still be running. Cancel
+    // its iframe rather than blocking the next page for the inference timeout.
+    if(isProcessing)try{resetSandbox('Page monitoring stopped');}
+      catch(error){console.warn('Cannot reset stopped OCR sandbox:',errorText(error));}
+  }
   respond({ok:true});return false;
 });
 Promise.resolve().then(()=>chrome.runtime.sendMessage({type:'OFFLINE_OCR_GET_JOB'})).then(r=>{if(r?.job)queue(r.job);}).catch(()=>{});

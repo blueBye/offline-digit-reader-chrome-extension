@@ -86,3 +86,27 @@ test('healthcheck rejects other pages and does not submit or refresh CAPTCHA',as
   assert.equal((await env.send({type:'OFFLINE_OCR_HEALTHCHECK',monitorId:id})).ok,true);
   assert.equal(env.events.length,originalCount);
 });
+
+test('new page registration survives navigation and stale page stop',async()=>{
+  const env=setup();
+  await env.send({type:'OFFLINE_OCR_MONITOR_START',monitorId:id,dataURL:img});
+  const next='fedcba9876543210fedcba9876543210';
+  const nextPage={tab:{id:12},frameId:0,url:'https://example.com/other-captcha'};
+  assert.equal((await env.send({type:'OFFLINE_OCR_MONITOR_START',monitorId:next,dataURL:later},nextPage)).ok,true);
+  assert.equal(env.state.monitorContext.monitorId,next);
+  assert.equal(env.state.ocrJob.dataURL,later);
+  // A late tabs loading event must not erase the freshly accepted job.
+  env.chrome.tabs.onUpdated && assert.equal(env.state.monitorContext.monitorId,next);
+  assert.equal((await env.send({type:'OFFLINE_OCR_MONITOR_STOP',monitorId:id},page)).ok,false);
+  assert.equal(env.state.monitorContext.monitorId,next);
+  assert.equal((await env.send({type:'OFFLINE_OCR_IS_CURRENT',monitorId:next,revision:1},worker)).ok,true);
+});
+
+test('stale OCR job cannot submit after its page lease expires',async()=>{
+  const env=setup();
+  await env.send({type:'OFFLINE_OCR_MONITOR_START',monitorId:id,dataURL:img});
+  env.state.monitorContext.lastSeen=Date.now()-62000;
+  const result=await env.send({type:'OFFLINE_OCR_SUBMIT',monitorId:id,revision:1,digits:'123456',score:0.99},worker);
+  assert.equal(result.ok,false);
+  assert.equal(env.events.some(e=>e.msg?.type==='OFFLINE_OCR_APPLY_AND_SUBMIT'),false);
+});

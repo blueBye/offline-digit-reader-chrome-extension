@@ -8,9 +8,9 @@ const file=resolve(import.meta.dirname,'../src/offscreen.js');
 const source=readFileSync(file,'utf8').replace(/^import\s+.*?;\s*$/gm,'');
 const monitorId='0123456789abcdef0123456789abcdef';
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-function fixture({failDecode=false,failConnection=false}={}){
+function fixture({failDecode=false,failConnection=false,stallFirst=false}={}){
   const messages=[];let runtimeListener, windowListener;
-  let currentRev=1, inferences=0, resets=0, closes=0, connected=!failConnection;
+  let currentRev=1, currentMonitorId=monitorId, inferences=0, resets=0, closes=0, connected=!failConnection;
   let currentFrame;
   const createFrame=()=>{
     const frame={src:'',addEventListener(_event,cb){queueMicrotask(cb);},cloneNode(){return createFrame();},
@@ -21,6 +21,7 @@ function fixture({failDecode=false,failConnection=false}={}){
       }
       if(data.type==='recognize'){
         inferences++;
+        if(stallFirst && inferences===1)return;
         windowListener?.({source:frame.contentWindow,data:inferences===1?{
           protocol:'offline-paddleocr-v2',type:'failed',id:data.id,message:'simulated ONNX runtime failure'
         }:{
@@ -39,7 +40,7 @@ function fixture({failDecode=false,failConnection=false}={}){
       if(m.type==='OFFLINE_OCR_GET_JOB')return {job:null};
       if(m.type==='OFFLINE_OCR_IS_CURRENT'){
         if(!connected)throw Error('temporary extension message failure');
-        return {ok:m.revision===currentRev};
+        return {ok:m.revision===currentRev && m.monitorId===currentMonitorId};
       }
       return {ok:true};
     }}};
@@ -57,9 +58,9 @@ function fixture({failDecode=false,failConnection=false}={}){
   };
   runInNewContext(source,context);
   return {messages,
-    job:async rev=>{
-      currentRev=rev;
-      runtimeListener({type:'OFFLINE_OCR_JOB',job:{monitorId,revision:rev,dataURL:'data:image/png;base64,AAAA'}},{id:'ext'},()=>{});
+    job:async (rev,id=monitorId)=>{
+      currentRev=rev;currentMonitorId=id;
+      runtimeListener({type:'OFFLINE_OCR_JOB',job:{monitorId:id,revision:rev,dataURL:'data:image/png;base64,AAAA'}},{id:'ext'},()=>{});
       await pause(25);
     },
     stop:()=>runtimeListener({type:'OFFLINE_OCR_JOB',job:null},{id:'ext'},()=>{}),
@@ -99,5 +100,21 @@ test('transport error is recoverable and does not refresh the CAPTCHA',async()=>
   f.connect();
   await f.job(2);
   assert.equal(f.stats().inferences,1);
+  f.stop();
+});
+
+test('navigation cancels stalled old sandbox and lets the next page run',async()=>{
+  const f=fixture({stallFirst:true});
+  await f.job(1);
+  assert.equal(f.stats().inferences,1);
+  assert.equal(f.messages.some(m=>m.type==='OFFLINE_OCR_SUBMIT'),false);
+  f.stop();
+  await pause(25);
+  assert.ok(f.stats().resets>=1,'Stopping must unload the stalled OCR frame');
+  const other='fedcba9876543210fedcba9876543210';
+  await f.job(1,other);
+  assert.equal(f.stats().inferences,2);
+  assert.equal(f.messages.filter(m=>m.type==='OFFLINE_OCR_SUBMIT').length,1);
+  assert.equal(f.messages.find(m=>m.type==='OFFLINE_OCR_SUBMIT').monitorId,other);
   f.stop();
 });

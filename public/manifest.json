@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Offline Six-Digit Image Reader (PaddleOCR)",
   "description": "On-device PaddleOCR with saved per-domain selectors and manual or automatic confirmation.",
-  "version": "3.0.1",
+  "version": "3.0.3",
   "minimum_chrome_version": "116",
   "action": {
     "default_title": "Offline OCR site monitor",

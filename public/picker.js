@@ -16,6 +16,11 @@
   const isSelector = value => typeof value === 'string' && value.length > 0 && value.length <= 1024;
   const validProfile = p => !!p && ['imageSelector','anchorSelector','fieldSelector','refreshSelector','submitSelector'].every(k => isSelector(p[k]));
   const safeQuery = s => { try { return document.querySelector(s); } catch { return null; } };
+  // An element kept in the DOM by an SPA may nevertheless belong to a hidden
+  // route. Never OCR, fill, refresh or submit controls that aren't visible.
+  const visible = el => !!(el instanceof Element && el.isConnected &&
+    el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden' &&
+    getComputedStyle(el).visibility !== 'collapse');
   const domainProfiles = async () => (await chrome.storage.local.get(PROFILE_KEY))[PROFILE_KEY] || {};
 
   function banner(message) {
@@ -120,35 +125,40 @@
     const found=(imageNode&&findImage(imageNode)) || (anchorNode&&findImage(anchorNode));
     const field=safeQuery(p.fieldSelector), refresh=safeQuery(p.refreshSelector), submit=safeQuery(p.submitSelector);
     if(!found || !found.dataURL || found.dataURL.length>IMAGE_LIMIT || !isField(field) ||
-       !buttonFrom(refresh) || !buttonFrom(submit) || refresh===submit) return null;
+       !buttonFrom(refresh) || !buttonFrom(submit) || refresh===submit ||
+       ![found.element,field,refresh,submit].every(visible)) return null;
     return {image:{...found,anchor:anchorNode || found.element.closest('help') || found.element.parentElement || found.element},field,refresh,submit};
   }
   function cancelPending() {
     if(!pending)return;
     pending.observer?.disconnect();clearInterval(pending.interval);clearTimeout(pending.timer);
-    pending.ui.close();pending=null;
+    pending.ui?.close?.();pending=null;
   }
-  async function tryAutoStart(p) {
+  async function tryAutoStart(p,delayMs=0) {
     if(!validProfile(p) || picker || monitor || pending) return;
-    const ui=banner(`Saved configuration for ${DOMAIN}. Looking for controls…`);
-    ui.info.textContent='Applies across paths on this hostname · offline OCR';
-    ui.stop.textContent='Stop on this page';
-    const state={ui,observer:null,interval:null,timer:null};pending=state;
-    function stopWait(){if(pending===state)cancelPending();}
-    ui.stop.addEventListener('click',stopWait);
+    // Normal pages without CAPTCHA elements remain silent and idle. No OCR
+    // runtime is started until all selected controls are present and visible.
+    const state={observer:null,interval:null,timer:null,readyAfter:Date.now()+delayMs};pending=state;
     let scheduled=false;
     async function check(){
-      if(pending!==state || picker || monitor)return;
+      if(pending!==state || picker || monitor || Date.now()<state.readyAfter)return;
       const found=elementsFor(p);
       if(!found)return;
-      state.observer?.disconnect();clearInterval(state.interval);clearTimeout(state.timer);
-      pending=null;ui.close();
+      cancelPending();
       try { await startMonitor(p,found); }
-      catch(e) {const err=banner(`Could not activate saved configuration: ${asError(e)}`);err.info.textContent=DOMAIN;err.stop.textContent='Dismiss';err.stop.onclick=()=>err.close();}
+      catch(e) {
+        console.warn('Offline OCR monitor initialization failed:',asError(e));
+        // Failure to initialize a page must not permanently disable its
+        // saved-domain configuration. Try again on the next polling cycle.
+        if(!picker && !monitor && profile===p)void tryAutoStart(p);
+      }
     }
     function queue(){if(scheduled)return;scheduled=true;state.timer=setTimeout(()=>{scheduled=false;void check();},200);}
-    state.observer=new MutationObserver(queue);
-    state.observer.observe(document.documentElement,{childList:true,subtree:true});
+    try{
+      state.observer=new MutationObserver(queue);
+      state.observer.observe(document.documentElement,{childList:true,subtree:true,attributes:true,
+        attributeFilter:['src','style','class','hidden','aria-hidden']});
+    }catch(e){console.warn('Offline OCR DOM observer unavailable; polling continues:',asError(e));}
     state.interval=setInterval(()=>{void check();},1000);
     await check();
   }
@@ -223,8 +233,12 @@
     const ui=banner('Starting local OCR…');
     const {imageSelector,anchorSelector,fieldSelector,refreshSelector,submitSelector}=p;
     let source=initial.image.element, anchor=initial.image.anchor, input=initial.field, refreshBtn=initial.refresh, submitBtn=initial.submit;
+    const startURL=location.href;
+    let missingSince=0;
     let previousImage=initial.image.dataURL, revision=1, active=true, scheduled=false, updating=false;
     let refreshCount=0,refreshRevision=0,handledRevision=0,observer=null,interval=null,unchangedTimer=null;
+    let registered=false,registerFailures=0,nextRegisterAttempt=0,lastHealth=0;
+    let imageFailures=0,nextImageAttempt=0;
     let autoSubmit=!!p.autoSubmit;
     const restore=(el,sel,isValid)=>el?.isConnected && isValid(el)?el:(()=>{const n=safeQuery(sel);return n&&isValid(n)?n:null;})();
     function currentImage(){
@@ -234,9 +248,9 @@
       if(found){source=found.element;return found.dataURL;}
       return null;
     }
-    const currentField=()=>input=restore(input,fieldSelector,isField);
-    const currentRefresh=()=>refreshBtn=restore(refreshBtn,refreshSelector,n=>!!buttonFrom(n));
-    const currentSubmit=()=>submitBtn=restore(submitBtn,submitSelector,n=>!!buttonFrom(n));
+    const currentField=()=>input=restore(input,fieldSelector,n=>isField(n)&&visible(n));
+    const currentRefresh=()=>refreshBtn=restore(refreshBtn,refreshSelector,n=>!!buttonFrom(n)&&visible(n));
+    const currentSubmit=()=>submitBtn=restore(submitBtn,submitSelector,n=>!!buttonFrom(n)&&visible(n));
     function clearInput(){
       const el=currentField();if(!el)return;
       if(el instanceof HTMLInputElement||el instanceof HTMLTextAreaElement){
@@ -260,35 +274,127 @@
       ui.status(s,error);
       ui.info.textContent=`${DOMAIN} · image #${revision} · refreshes ${refreshCount} · ${autoSubmit?'auto submit':'manual confirmation'}`;
     }
+    async function register(img){
+      if(Date.now()<nextRegisterAttempt)return;
+      try{
+        const result=await chrome.runtime.sendMessage({type:'OFFLINE_OCR_MONITOR_START',monitorId:id,dataURL:img});
+        if(!result?.ok)throw Error(result?.error||'Background OCR is unavailable');
+        if(!active){void chrome.runtime.sendMessage({type:'OFFLINE_OCR_MONITOR_STOP',monitorId:id}).catch(()=>{});return;}
+        registered=true;registerFailures=0;nextRegisterAttempt=0;lastHealth=Date.now();
+        imageFailures=0;nextImageAttempt=0;
+        // Re-registering after the background loses state must not cause a
+        // second click on a CAPTCHA already handled on the same page.
+        const alreadyHandled=handledRevision===revision && previousImage===img;
+        previousImage=img;revision=1;refreshRevision=0;handledRevision=alreadyHandled?1:0;
+        display(result.warning||'Monitoring active. Offline OCR is running.',!!result.warning);
+      }catch(e){
+        registerFailures++;
+        const delay=Math.min(30000,1000*2**Math.min(registerFailures,5));
+        nextRegisterAttempt=Date.now()+delay;
+        display(`OCR connection unavailable: ${asError(e)}. Retrying in ${Math.ceil(delay/1000)}s…`,true);
+      }
+    }
     async function check(){
       if(!active||updating)return;
-      const img=currentImage();
-      if(!img||img.length>IMAGE_LIMIT||img===previousImage)return;
-      previousImage=img;revision++;refreshRevision=0;clearTimeout(unchangedTimer);clearInput();
       updating=true;
       try{
-        const response=await chrome.runtime.sendMessage({type:'OFFLINE_OCR_MONITOR_IMAGE',monitorId:id,revision,dataURL:img});
-        if(!response?.ok)throw Error(response?.error||'Image update rejected');
-        display('Image changed. Recognizing…');
-      }catch(e){display(`Monitoring stopped: ${asError(e)}`,true);stop(false);}
-      finally{updating=false;if(active&&currentImage()!==previousImage)queueCheck();}
+        if(location.href!==startURL){
+          // A client-side route transition is logically a new page, even
+          // when the framework reuses the same DOM nodes or image bytes.
+          pauseForPage();return;
+        }
+        const controls=elementsFor(p);
+        if(!controls){
+          if(!missingSince)missingSince=Date.now();
+          if(Date.now()-missingSince>=2000){pauseForPage();return;}
+          display('CAPTCHA controls are unavailable. Waiting for the page…');
+          return;
+        }
+        missingSince=0;
+        // The SPA may replace its controls without replacing the document.
+        // Re-arm with a new monitor ID so even identical CAPTCHA bytes are
+        // processed on the new form rather than mistaken for an old result.
+        if(controls.image.element!==source || controls.field!==input ||
+            controls.refresh!==refreshBtn || controls.submit!==submitBtn){
+          pauseForPage();return;
+        }
+        const img=currentImage();
+        if(!img||img.length>IMAGE_LIMIT){
+          if(registered)display('Image temporarily unavailable. Waiting for it to return…',true);
+          return;
+        }
+        if(!registered){await register(img);return;}
+        if(img!==previousImage){
+          if(Date.now()<nextImageAttempt)return;
+          const nextRevision=revision+1;
+          const response=await chrome.runtime.sendMessage({type:'OFFLINE_OCR_MONITOR_IMAGE',monitorId:id,revision:nextRevision,dataURL:img});
+          if(!response?.ok){
+            if(/expired|not registered|not the owning/i.test(response?.error||'')){
+              registered=false;nextRegisterAttempt=0;
+            }
+            throw Error(response?.error||'Image update was not acknowledged');
+          }
+          // Commit the revision only after the background accepted it. A
+          // communication failure retries this same image on the next poll.
+          previousImage=img;revision=nextRevision;refreshRevision=0;
+          imageFailures=0;nextImageAttempt=0;
+          clearTimeout(unchangedTimer);
+          try{clearInput();}catch(e){display(`Input temporarily unavailable: ${asError(e)}`,true);}
+          display(response.warning||'Image changed. Recognizing…',!!response.warning);
+        } else if(Date.now()-lastHealth>=10000){
+          lastHealth=Date.now();
+          const response=await chrome.runtime.sendMessage({type:'OFFLINE_OCR_HEALTHCHECK',monitorId:id});
+          if(!response?.ok){
+            if(/not registered/i.test(response?.error||'')){registered=false;nextRegisterAttempt=0;}
+            display(`OCR host unavailable: ${response?.error||'unknown error'}. Monitoring continues.`,true);
+          }
+        }
+      }catch(e){
+        // Network/runtime/extension message failures do not stop the observer.
+        imageFailures++;
+        nextImageAttempt=Date.now()+Math.min(15000,1000*2**Math.min(imageFailures-1,4));
+        display(`Temporary OCR communication error: ${asError(e)}. Retrying…`,true);
+      }finally{
+        updating=false;
+        if(active){
+          try{if(Date.now()>=nextImageAttempt && currentImage()!==previousImage)queueCheck();}catch{}
+        }
+      }
     }
     function queueCheck(){if(!active||scheduled)return;scheduled=true;setTimeout(()=>{scheduled=false;void check();},100);}
+    function pauseForPage(){
+      if(!active)return;
+      stop();
+      // Saved configuration stays active at the domain level; it simply waits
+      // until a page contains the controls again. Never treat absence as an
+      // OCR/model failure or refresh an unrelated page.
+      if(profile && !picker)void tryAutoStart(profile,500);
+    }
     function stop(notify=true){
       if(!active)return;
       active=false;clearInterval(interval);clearTimeout(unchangedTimer);observer?.disconnect();
+      window.removeEventListener('pagehide',onPageHide);
       chrome.runtime.onMessage.removeListener(onMessage);
       ui.close();if(monitor===api)monitor=null;
       delete window.__offlineDigitMonitor;
       if(notify)void chrome.runtime.sendMessage({type:'OFFLINE_OCR_MONITOR_STOP',monitorId:id}).catch(()=>{});
     }
+    function onPageHide(){stop();}
+    function sameForm(){
+      if(location.href!==startURL)return false;
+      const c=elementsFor(p);
+      return !!c && c.image.element===source && c.field===input &&
+        c.refresh===refreshBtn && c.submit===submitBtn;
+    }
     function requestRefresh(){
-      if(!active||handledRevision===revision)return {ok:false,error:'Already handled'};
+      if(!active||!sameForm()) {queueCheck();return {ok:false,error:'CAPTCHA controls not present on this page'};}
+      if(handledRevision===revision)return {ok:false,error:'Already handled'};
       if(refreshRevision===revision)return {ok:true,alreadyRequested:true};
       const btn=currentRefresh();if(!btn)return {ok:false,error:'Refresh button unavailable'};
       refreshRevision=revision;refreshCount++;
       display('No reliable six digits. Refreshing image…');
-      btn.click();queueCheck();
+      try{btn.click();}catch(e){display(`Image refresh failed: ${asError(e)}`,true);return {ok:false,error:asError(e)};}
+      queueCheck();
       // Unlimited total retries, but NEVER repeatedly click for the same image.
       clearTimeout(unchangedTimer);
       const oldRev=revision;
@@ -296,41 +402,49 @@
       return {ok:true};
     }
     function apply(message){
+      if(!active||!sameForm()) {queueCheck();return {ok:false,error:'CAPTCHA controls not present on this page'};}
       if(handledRevision===revision)return {ok:true,alreadySubmitted:true};
       if(!/^\d{6}$/.test(message.digits||'')||message.revision!==revision)return {ok:false,error:'Invalid or outdated recognition'};
       if(currentImage()!==previousImage){queueCheck();return {ok:false,error:'Image changed before filling'};}
       if(autoSubmit&&!currentSubmit())return {ok:false,error:'Submit button missing or disabled'};
       if(!fill(message.digits))return {ok:false,error:'Destination input unavailable'};
       handledRevision=revision;
-      if(autoSubmit){display(`Entered ${message.digits}; submitting…`);currentSubmit().click();}
-      else display(`Entered ${message.digits}; click Submit yourself.`);
+      if(autoSubmit){
+        display(`Entered ${message.digits}; submitting…`);
+        // Mark handled BEFORE clicking; if the site's handler throws, retrying
+        // could otherwise submit the same CAPTCHA a second time.
+        try{currentSubmit().click();}catch(e){display(`Submit handler failed: ${asError(e)}. Not clicking again.`,true);return {ok:false,error:asError(e)};}
+      } else display(`Entered ${message.digits}; click Submit yourself.`);
       return {ok:true,manual:!autoSubmit};
     }
     function onMessage(message,_sender,respond){
       if(message?.monitorId!==id)return false;
       if(message.type==='OFFLINE_OCR_MONITOR_STOP_REQUEST'){stop(false);respond({ok:true});return false;}
       if(!active||message.revision!==revision){respond({ok:false,error:'Stale image version'});return false;}
-      let result;
-      if(message.type==='OFFLINE_OCR_REFRESH')result=requestRefresh();
-      else if(message.type==='OFFLINE_OCR_APPLY_AND_SUBMIT')result=apply(message);
-      else if(message.type==='OFFLINE_OCR_STATUS'){display(message.message||'OCR running…',message.level==='error');result={ok:true};}
-      else return false;
-      respond(result);return false;
+      try {
+        let result;
+        if(message.type==='OFFLINE_OCR_REFRESH')result=requestRefresh();
+        else if(message.type==='OFFLINE_OCR_APPLY_AND_SUBMIT')result=apply(message);
+        else if(message.type==='OFFLINE_OCR_STATUS'){display(message.message||'OCR running…',message.level==='error');result={ok:true};}
+        else return false;
+        respond(result);
+      } catch(e) {display(`Page control error: ${asError(e)}. Monitoring continues.`,true);respond({ok:false,error:asError(e)});}
+      return false;
     }
     const api={stop,getStatus:()=>({active,revision,refreshCount,handledRevision,autoSubmit}),setAutoSubmit:mode=>{autoSubmit=!!mode;display(`Confirmation mode: ${autoSubmit?'automatic':'manual'}.`);}};
     monitor=api;window.__offlineDigitMonitor=api;
     chrome.runtime.onMessage.addListener(onMessage);
-    ui.stop.addEventListener('click',()=>stop());
+    ui.stop.addEventListener('click',()=>{stop();cancelPending();});
     display('Starting local OCR in background…');
     try{
-      const result=await chrome.runtime.sendMessage({type:'OFFLINE_OCR_MONITOR_START',monitorId:id,dataURL:previousImage});
-      if(!result?.ok)throw Error(result?.error||'Could not start monitoring');
-      if(!active)return;
       observer=new MutationObserver(queueCheck);
       observer.observe(document.documentElement,{attributes:true,attributeFilter:['src','style','data-src','href'],childList:true,characterData:true,subtree:true});
-      interval=setInterval(()=>{void check();},1000);
-      display('Monitoring active. Offline OCR is running.');
-    }catch(e){stop(false);throw e;}
+    }catch(e){display(`Page observer unavailable: ${asError(e)}. Using periodic checks.`,true);}
+    interval=setInterval(()=>{void check();},1000);
+    // Free resources when the document unloads; a fresh content script will
+    // take over on the next full navigation. SPA changes use pauseForPage().
+    window.addEventListener('pagehide',onPageHide,{once:true});
+    void check();
   }
 
   chrome.runtime.onMessage.addListener((m,_sender,respond)=>{

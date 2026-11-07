@@ -16,14 +16,19 @@ test('offscreen forwards PaddleOCR stages and actionable timeouts',()=>{
  assert.match(code,/lastStage=String\(message/);
  assert.match(code,/PaddleOCR stalled at:/);
 });
-test('timeout recovery creates a fresh sandbox and retries once',()=>{
+test('engine reset creates a fresh sandbox and backs off without blocking later jobs',()=>{
  assert.match(code,/currentFrame\.replaceWith\(next\)/);
- assert.match(code,/output=await recognize\(img,job\);[\s\S]*resetSandbox\(errorText\(firstError\)\);[\s\S]*output=await recognize\(img,job\)/);
+ assert.match(code,/scheduleRetry\(job,error\)/);
+ assert.match(code,/Math\.min\(60000,2000\*2\*\*/);
+ assert.match(code,/cancelRetry\(\);retryCount=0/);
 });
-test('engine failures do not refresh or submit',()=>{
+test('engine failures are distinct from corrupt images and uncertain submissions',()=>{
  const catchBlock=code.slice(code.indexOf('} catch(error) {',code.indexOf('async function process(')));
- assert.doesNotMatch(catchBlock,/send\(job,'OFFLINE_OCR_RETRY'\)/);
- assert.match(catchBlock,/No button was clicked/i);
+ assert.match(catchBlock,/if\(phase==='image'\)/);
+ assert.match(catchBlock,/else if\(phase==='engine'\)/);
+ assert.match(catchBlock,/else if\(phase==='communication'\)/);
+ assert.match(catchBlock,/Submission acknowledgment is ambiguous: NEVER send the same result twice/);
+ assert.match(code,/if\(!Array\.isArray\(output\)/);
 });
 
 test('original image never calls stalled HTMLImageElement.decode',()=>{

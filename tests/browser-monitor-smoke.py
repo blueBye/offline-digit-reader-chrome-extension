@@ -1,6 +1,5 @@
-"""Legacy command name: run the updated domain-wide monitoring smoke tests."""
-No ONNX model is loaded; Chrome APIs are mocked to exercise the content script.
-Run: python tests/browser-domain-smoke.py
+"""Legacy monitor smoke test. Chrome APIs are mocked; no ONNX model is loaded.
+Run: python tests/browser-monitor-smoke.py
 """
 import base64
 from pathlib import Path

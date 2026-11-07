@@ -12,6 +12,7 @@ const frame=document.querySelector('#ocr-sandbox');
 let ready=false, readyResolve;
 let readyPromise=new Promise(resolve=>{readyResolve=resolve;});
 let requestId=0, isProcessing=false, newest=null, lastAcceptedKey=null;
+let retryTimer=null, retryCount=0;
 let activeJob=null, lastStage='waiting for OCR sandbox';
 const waiting=new Map();
 const errorText=e=>e?.message||String(e);
@@ -20,8 +21,22 @@ async function send(job,type,fields={}) {
   return chrome.runtime.sendMessage({type,monitorId:job.monitorId,revision:job.revision,...fields});
 }
 function status(job,message,level='info') {
-  if(!job)return;
-  return send(job,'OFFLINE_OCR_STATUS',{message,level}).catch(()=>{});
+  if(!job)return Promise.resolve();
+  // Reporting an error must never itself crash the OCR pipeline.
+  return Promise.resolve().then(()=>send(job,'OFFLINE_OCR_STATUS',{message,level})).catch(()=>{});
+}
+function cancelRetry(){clearTimeout(retryTimer);retryTimer=null;}
+function jobKey(job){return `${job.monitorId}:${job.revision}`;}
+function scheduleRetry(job,error){
+  if(lastAcceptedKey!==jobKey(job))return;
+  cancelRetry();
+  retryCount++;
+  const delay=Math.min(60000,2000*2**Math.min(retryCount-1,5));
+  void status(job,`OCR temporarily unavailable: ${errorText(error).slice(0,110)}. Retrying in ${Math.round(delay/1000)}s; monitoring stays active.`,'error');
+  retryTimer=setTimeout(()=>{
+    retryTimer=null;
+    if(lastAcceptedKey===jobKey(job) && !newest){newest=job;void pump();}
+  },delay);
 }
 function withTimeout(p,ms,message) {
   let timer;
@@ -90,61 +105,96 @@ async function recognize(img,job){
 }
 async function process(job){
   activeJob=job;
-  let img=null;
+  let img=null, phase='communication';
   try {
+    // The page can change or monitoring can stop while an earlier OCR is running.
+    const initial=await send(job,'OFFLINE_OCR_IS_CURRENT');
+    if(!initial?.ok)return;
+    phase='image';
     lastStage='decoding selected image with ImageBitmap';
-    await status(job, 'Decoding selected image locally…');
+    await status(job,'Decoding selected image locally…');
     img=await decodeImage(job.dataURL);
     const {width,height}=imageDimensions(img);
-    await status(job, `Image decoded (${width}×${height}); preparing OCR…`);
-    let output;
-    try {
-      output=await recognize(img,job);
-    } catch(firstError) {
-      if(!/stalled|did not start/i.test(errorText(firstError)))throw firstError;
-      await status(job,`OCR engine was unresponsive (${lastStage}); restarting once…`,'error');
-      resetSandbox(errorText(firstError));
-      output=await recognize(img,job); // One bounded retry; never click Refresh on engine failures.
+    await status(job,`Image decoded (${width}×${height}); preparing OCR…`);
+    phase='engine';
+    const output=await recognize(img,job);
+    if(!Array.isArray(output) || !output.length || output.every(item=>item?.error)) {
+      const reason=output?.find(item=>item?.error)?.error || 'No OCR image variant produced a result';
+      throw Error(`OCR runtime could not process the image: ${String(reason).slice(0,180)}`);
     }
+    phase='communication';
     const current=await send(job,'OFFLINE_OCR_IS_CURRENT');
     if(!current?.ok)return;
-    const candidates=output.flatMap(o=>o.error?[]:fromOcrResult({items:o.items},o.mode));
+    const candidates=output.flatMap(o=>o?.error?[]:fromOcrResult({items:o.items},o.mode));
     const best=chooseCandidate(candidates);
     if(!best||best.score<0.85) {
+      // Successfully decoded and attempted recognition: a new image can help.
+      retryCount=0;
       await status(job,best?'Low confidence; requesting new image.':'No complete six-digit result; requesting new image.');
       const refresh=await send(job,'OFFLINE_OCR_RETRY');
       if(refresh?.ok===false)await status(job,refresh.error,'error');
       return;
     }
+    // A transient message error must never trigger an unsafe duplicate submit.
+    phase='submission';
     const result=await send(job,'OFFLINE_OCR_SUBMIT',{digits:best.digits,score:best.score});
+    if(result?.ok)retryCount=0;
     await status(job,result?.ok?`Submitted image #${job.revision} (${Math.round(best.score*100)}%).`:
       `Not submitted: ${result?.error||'Unknown error'}`,result?.ok?'info':'error');
   } catch(error) {
-    // An engine timeout is not a bad CAPTCHA: don't click refresh or submit.
-    await status(job,`OCR failed at ${lastStage}: ${errorText(error)}. No button was clicked.`,'error');
-    if(/stalled|did not start|sandbox restarted/i.test(errorText(error)))resetSandbox(errorText(error));
+    await status(job,`${phase==='image'?'Image decoding':'OCR engine'} failed at ${lastStage}: ${errorText(error).slice(0,170)}. Monitoring continues.`,'error');
+    if(phase==='image') {
+      // A broken CAPTCHA is not a broken model; request at most one refresh
+      // for this image, as enforced by the page content script.
+      try {
+        const current=await send(job,'OFFLINE_OCR_IS_CURRENT');
+        if(current?.ok){
+          const result=await send(job,'OFFLINE_OCR_RETRY');
+          if(!result?.ok)await status(job,`Refresh unavailable: ${result?.error||'unknown'}`,'error');
+        }
+      } catch(reportError) {await status(job,`Cannot request a fresh image: ${errorText(reportError)}`,'error');}
+    } else if(phase==='engine') {
+      // If WASM/PaddleOCR becomes stuck or throws, destroy only its isolated
+      // iframe. Never refresh the CAPTCHA or click Submit for engine failures.
+      try{resetSandbox(errorText(error).slice(0,180));}
+      catch(resetError){await status(job,`OCR sandbox reset failed: ${errorText(resetError)}`,'error');}
+      scheduleRetry(job,error);
+    } else if(phase==='communication') {
+      // A lost message acknowledgment can be retried safely before submit.
+      scheduleRetry(job,error);
+    } // Submission acknowledgment is ambiguous: NEVER send the same result twice.
   } finally {
-    img?.close?.(); // ImageBitmap releases native decoder memory.
+    try{img?.close?.();}catch{}
     if(activeJob===job)activeJob=null;
   }
 }
 async function pump(){
   if(isProcessing)return;
   isProcessing=true;
-  try{while(newest){const job=newest;newest=null;await process(job);}}
-  finally{isProcessing=false;}
+  try{
+    while(newest){
+      const job=newest;newest=null;
+      try{await process(job);}
+      catch(error){
+        // Last-resort guard: one bad job can never kill the queue permanently.
+        await status(job,`Unexpected OCR error: ${errorText(error)}. Will retry.`,'error');
+        scheduleRetry(job,error);
+      }
+    }
+  } finally {isProcessing=false;}
 }
 function queue(job){
   if(!job?.monitorId||!Number.isSafeInteger(job.revision)||typeof job.dataURL!=='string')return;
-  const key=`${job.monitorId}:${job.revision}`;
+  const key=jobKey(job);
   if(lastAcceptedKey===key)return;
+  cancelRetry();retryCount=0;
   lastAcceptedKey=key;
   newest=job;void pump();
 }
 chrome.runtime.onMessage.addListener((m,sender,respond)=>{
   if(m?.type!=='OFFLINE_OCR_JOB'||sender.id!==chrome.runtime.id||sender.tab)return false;
   if(m.job)queue(m.job);
-  else {newest=null;lastAcceptedKey=null;}
+  else {newest=null;lastAcceptedKey=null;cancelRetry();retryCount=0;}
   respond({ok:true});return false;
 });
-chrome.runtime.sendMessage({type:'OFFLINE_OCR_GET_JOB'}).then(r=>{if(r?.job)queue(r.job);}).catch(()=>{});
+Promise.resolve().then(()=>chrome.runtime.sendMessage({type:'OFFLINE_OCR_GET_JOB'})).then(r=>{if(r?.job)queue(r.job);}).catch(()=>{});

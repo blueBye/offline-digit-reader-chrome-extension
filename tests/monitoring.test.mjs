@@ -9,13 +9,13 @@ const later='data:image/png;base64,'+Buffer.from('newer-image').toString('base64
 const id='0123456789abcdef0123456789abcdef';
 const page={tab:{id:12},frameId:0,url:'https://example.com'};
 const worker={url:'chrome-extension://test/offscreen.html',origin:'chrome-extension://test',id:'test',frameId:0};
-function setup(){
+function setup({hostFailures=0}={}){
   const state={},events=[],listeners={};let hasOffscreen=false;
   const chrome={
     runtime:{id:'test',getURL:s=>`chrome-extension://test/${s}`,onMessage:{addListener:f=>listeners.message=f}},
     tabs:{onRemoved:{addListener:f=>listeners.removed=f},onUpdated:{addListener:f=>listeners.updated=f},
       sendMessage:async(tab,msg)=>{events.push({tab,msg});return {ok:true};}},
-    offscreen:{hasDocument:async()=>hasOffscreen,createDocument:async({url,reasons})=>{hasOffscreen=true;events.push({url,reasons});}},
+    offscreen:{hasDocument:async()=>hasOffscreen,createDocument:async({url,reasons})=>{if(hostFailures-->0)throw Error('simulated host creation failure');hasOffscreen=true;events.push({url,reasons});}},
     storage:{session:{get:async keys=>Object.fromEntries((Array.isArray(keys)?keys:[keys]).map(k=>[k,state[k]])),set:async obj=>Object.assign(state,obj)}}
   };
   runInNewContext(source,{chrome,console});
@@ -66,4 +66,23 @@ test('offscreen host can request current job and validate revision via runtime m
   assert.equal((await env.send({type:'OFFLINE_OCR_IS_CURRENT',monitorId:id,revision:1},worker)).ok,true);
   assert.equal((await env.send({type:'OFFLINE_OCR_IS_CURRENT',monitorId:id,revision:2},worker)).ok,false);
   assert.equal((await env.send({type:'OFFLINE_OCR_GET_JOB'},page)).ok,false);
+});
+
+test('offscreen creation failure leaves the page monitor registered and healthcheck recovers it',async()=>{
+  const env=setup({hostFailures:1});
+  const start=await env.send({type:'OFFLINE_OCR_MONITOR_START',monitorId:id,dataURL:img});
+  assert.equal(start.ok,true);
+  assert.match(start.warning,/temporarily unavailable/i);
+  assert.equal(env.state.ocrJob.dataURL,img);
+  assert.equal((await env.send({type:'OFFLINE_OCR_HEALTHCHECK',monitorId:id})).ok,true);
+  assert.equal(env.events[0].url,'offscreen.html');
+  assert.equal((await env.send({type:'OFFLINE_OCR_GET_JOB'},worker)).job.dataURL,img);
+});
+test('healthcheck rejects other pages and does not submit or refresh CAPTCHA',async()=>{
+  const env=setup();
+  await env.send({type:'OFFLINE_OCR_MONITOR_START',monitorId:id,dataURL:img});
+  const originalCount=env.events.length;
+  assert.equal((await env.send({type:'OFFLINE_OCR_HEALTHCHECK',monitorId:id},{tab:{id:5},frameId:0})).ok,false);
+  assert.equal((await env.send({type:'OFFLINE_OCR_HEALTHCHECK',monitorId:id})).ok,true);
+  assert.equal(env.events.length,originalCount);
 });

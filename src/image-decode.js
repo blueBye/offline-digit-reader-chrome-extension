@@ -62,11 +62,19 @@ function imageElementFallback(blob, ms) {
 export async function decodeImage(dataURL, {bitmapTimeoutMs=12000, fallbackTimeoutMs=4000}={}) {
   const blob = imageBlob(dataURL);
   if (typeof createImageBitmap === 'function') {
+    let abandoned=false;
     try {
-      const bitmap = await bounded(createImageBitmap(blob), bitmapTimeoutMs, 'ImageBitmap decoding timed out');
+      // createImageBitmap cannot be cancelled. Release a bitmap that finishes
+      // after the timeout rather than leaking native memory on every retry.
+      const pending=createImageBitmap(blob).then(bitmap=>{
+        if(abandoned){bitmap.close?.();throw Error('Late image decode discarded');}
+        return bitmap;
+      });
+      const bitmap = await bounded(pending, bitmapTimeoutMs, 'ImageBitmap decoding timed out');
       try { imageDimensions(bitmap); } catch (e) { bitmap.close?.(); throw e; }
       return bitmap;
     } catch (bitmapError) {
+      abandoned=true;
       // Fallback only for real decoder problems, not for validation failures.
       if (bitmapError.message === 'Image size is invalid') throw bitmapError;
       try {

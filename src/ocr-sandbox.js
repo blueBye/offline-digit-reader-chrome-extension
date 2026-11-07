@@ -9,7 +9,10 @@ const send = (type, id, extra = {}) => parent.postMessage({protocol: PROTOCOL, t
 const errorText = e => e?.stack || e?.message || String(e);
 
 window.addEventListener('error', e => send('error', null, {message: e.message || 'Sandbox script error'}));
-window.addEventListener('unhandledrejection', e => send('error', null, {message: errorText(e.reason)}));
+window.addEventListener('unhandledrejection', e => {
+  e.preventDefault();
+  send('error', null, {message: errorText(e.reason)});
+});
 
 async function loadEngine() {
   if (!enginePromise) {

@@ -1,4 +1,4 @@
-# Offline Six-Digit Image Reader — PaddleOCR v3.0
+# Offline Six-Digit Image Reader — PaddleOCR v3.0.2
 
 Chrome Manifest V3 extension. Recognizes a locally embedded six-digit image using local PP-OCRv5 ONNX models, fills a selected field, and optionally clicks a selected form submit button. No OCR API, CDN or external runtime service is used. Only use on websites where you have permission to automate the workflow.
 
@@ -40,45 +40,6 @@ Load `dist/` using `chrome://extensions` → Developer mode → Load unpacked. `
 
 **Limitations:** Only one tab is actively processed at a time by the existing offscreen OCR service; starting a monitor in another tab stops the previous one. A saved selector may no longer match after a website layout change; use Configure again to overwrite it. Chrome may throttle updates in background tabs. A high-confidence *wrong* six-digit result can still occur, so manual confirmation is safer.
 
-## Test the extension with the included Python webpage
-
-The repository includes **`offline-ocr-test-page/`**, a local test server for verifying element selection, saved domain configurations, image-change monitoring, automatic refresh, and manual/automatic submission. It uses only the Python 3 standard library; no `pip install` is required.
-
-From the **project root** in PowerShell:
-
-```powershell
-cd .\offline-ocr-test-page
-python server.py
-```
-
-Open **http://127.0.0.1:8000** in Chrome. If port 8000 is busy, run `python server.py --port 8765` and open `http://127.0.0.1:8765`. The server binds to `127.0.0.1` only, and the page makes no external API calls. Stop it using `Ctrl+C`.
-
-### First-time setup on the test page
-
-1. Build and load the extension from `dist/` as described above, then visit the test URL.
-2. Open the extension popup, choose whether **Submit automatically** should be enabled, and click **Configure four elements**.
-3. Select the elements in this exact order:
-
-   | Purpose | Test-page element |
-   | --- | --- |
-   | CAPTCHA image | Image inside `<help id="captcha-help">` — `#captcha-image` |
-   | Destination input | Six-digit entry box — `#captcha-input` |
-   | Refresh button | **Refresh CAPTCHA** — `#refresh-button` |
-   | Submit/confirm button | **Check input** — `#captcha-submit` |
-
-4. The extension saves these selectors for **`127.0.0.1`**, independent of page path. Subsequent visits on this hostname can start monitoring automatically. The configuration is hostname-based; `localhost` is a *different* hostname, and using it instead of `127.0.0.1` requires a separate configuration. The port is not part of the saved hostname.
-5. Click **Refresh CAPTCHA** on the page to generate a fresh six-digit image. The `<img>` element stays in place and its base64 JPEG `src` changes, allowing you to test the extension's image-change detection. The extension should then recognize and fill the field. If automatic confirmation is enabled, it can also click **Check input**; otherwise click it yourself.
-
-### Understanding test results
-
-- The **initial image** comes from `captcha_data_uri.txt` (if present). It is **not scored** by the server; the **Check input** button validates only its six-digit format.
-- Every image generated using **Refresh CAPTCHA** has a known answer. For these images, **Check input** reports **Correct** or **Incorrect** and updates the score, making it suitable for checking actual OCR accuracy.
-- Generated images are 200 × 50 JPEG data URIs with white backgrounds, randomized digit placement, speckle noise and crossing lines. They remain unchanged until **Refresh CAPTCHA** is clicked; there is no countdown or automatic image cycling.
-- For auto-refresh testing, a reading rejected by the extension can trigger its configured Refresh button. A refresh does not happen merely because a result was wrong but confidently accepted: the demo may report **Incorrect** in that case.
-- Use **Settings · Saved domains** in the extension popup to review or remove the `127.0.0.1` configuration and verify first-visit setup again.
-
-Test server files: `offline-ocr-test-page/server.py` implements the page and HTTP server; `offline-ocr-test-page/captcha_data_uri.txt` holds the optional original image. The helper folder's README may describe the older manual-only workflow; **the steps above describe the current four-selector extension and refreshed test server**.
-
 ## Tests
 
 ```powershell
@@ -94,3 +55,73 @@ python tests/browser-settings-smoke.py
 ```
 
 The browser DOM tests mock extension messaging; **they do not test the real PaddleOCR ONNX inference runtime**. Full `pnpm run build` requires locally installed dependencies and model archives.
+
+
+## v3.0.1: Intermittent WASM CSP errors
+
+If Chrome reports `Refused to connect to data:application/octet-stream;base64,AGFzb...` or
+`Fetch API cannot load data:application/octet-stream`, the blocked resource is
+an embedded **WebAssembly** module, not the selected JPEG image.
+
+Version 3.0.1 permits `data:` only in the sandbox's `connect-src` directive:
+
+```text
+connect-src 'self' chrome-extension: blob: data:
+```
+
+The main extension pages still use Chrome Manifest V3's strict CSP, and the
+extension still loads OCR models offline. The `CleanUnusedInitializersAndNodeArgs`
+warnings from ONNX Runtime are harmless optimizer messages.
+
+To update, overwrite the source files, run `pnpm test` and `pnpm run build`,
+reload the extension at `chrome://extensions`, and refresh open test pages.
+Do not change Chrome's global security settings or add `unsafe-eval` to normal
+extension pages.
+
+## v3.0.2: Graceful error handling (image, extension messaging, OCR runtime)
+
+This version is intended to **keep the saved-domain monitor alive** during
+transient failures. The user may see an error status, but the extension does
+not terminate monitoring or repeatedly click form buttons on exceptions.
+
+- **Unreadable/corrupt image:** report the image error, request at most one
+  image refresh for the affected revision, and continue watching the page.
+  Invalid/missing images do not result in field entry or submission.
+- **Runtime/ONNX/PaddleOCR error or stall:** leave the CAPTCHA alone, replace
+  only the isolated sandbox iframe, then retry the same revision with
+  exponential backoff (2, 4, 8, 16, 32, up to 60 seconds). A new image takes
+  priority over a pending retry. Model failures are never mistaken for poor
+  recognition confidence. Persistent failures remain visible as errors and
+  keep retrying; they cannot be fixed by code if the model assets are missing.
+- **Chrome extension messaging and background/offscreen unavailable:** retain
+  the page DOM observer and one-second polling. Retry registration and image
+  delivery with backoff; acknowledge an image revision only when delivered.
+  A periodic heartbeat re-creates a missing OCR host. Failures in health
+  checks do not stop monitoring.
+- **Submission ambiguity:** when a submit request's acknowledgment is lost,
+  do **not** automatically resubmit the same digits. The page also protects
+  against duplicate clicks for a previously handled image revision.
+- **Memory and failures:** release image bitmaps (including late-decoding
+  bitmaps after a timeout), reject outstanding sandbox requests on reset, and
+  guard unexpected per-job errors so the work queue remains usable.
+
+Update by overlaying the v3.0.2 hotfix ZIP onto your current v3.0.1 project.
+Keep your existing `public/models/` archives and `node_modules/`, then run:
+
+```powershell
+pnpm test
+pnpm run build
+```
+
+Reload the unpacked `dist/` extension from `chrome://extensions`, then reload
+open pages so the updated content script takes effect. Optional Chromium
+smoke checks (useful for error recovery):
+
+```bash
+python tests/browser-resilience.py
+python tests/browser-domain-smoke.py
+python tests/browser-monitor-smoke.py
+```
+
+**Note:** These tests mock Chrome APIs and model inference; they do not
+substitute for a full model-backed production build and on-device validation.

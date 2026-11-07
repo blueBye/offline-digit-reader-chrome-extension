@@ -57,3 +57,14 @@ if(!readFileSync(join(dist,'offscreen.html'),'utf8').includes('ocr-sandbox.html'
 if(readFileSync(join(dist,'reader.html'),'utf8').includes('id="processed"'))throw new Error('Preprocessing preview must be removed');
 
 if(!manifest.content_scripts?.some(c=>c.js?.includes('picker.js') && c.matches?.includes('https://*/*')))throw Error('Domain auto-start content script missing');
+
+// ORT can fetch embedded WebAssembly as a data:application/octet-stream URL.
+// Sandboxed OCR needs data: in connect-src; normal MV3 pages must remain strict.
+const sandboxCsp = manifest.content_security_policy?.sandbox || '';
+const connectDirective = sandboxCsp.split(';').map(s => s.trim()).find(s => s.startsWith('connect-src ')) || '';
+if (!/(?:^|\s)data:(?:\s|$)/.test(connectDirective)) {
+  throw new Error('OCR sandbox CSP connect-src must allow data: for embedded ONNX Runtime WASM');
+}
+if (/(?:^|\s)data:(?:\s|$)/.test(manifest.content_security_policy?.extension_pages || '')) {
+  throw new Error('Do not add data: to normal extension page CSP');
+}
